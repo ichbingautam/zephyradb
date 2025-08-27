@@ -113,5 +113,18 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 				conn.Write([]byte("$-1\r\n"))
 			}
 		}
+
+	case "RPUSH":
+		if len(parts) >= 7 { // *N, $5, RPUSH, $key_len, key, $val_len, value, ...
+			key := parts[4]
+			var values []string
+			// Collect all values (they're at even indices starting from 6)
+			for i := 6; i < len(parts); i += 2 {
+				values = append(values, parts[i])
+			}
+			length := s.store.RPush(key, values...)
+			resp := fmt.Sprintf(":%d\r\n", length)
+			conn.Write([]byte(resp))
+		}
 	}
 }

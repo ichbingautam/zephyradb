@@ -5,10 +5,20 @@ import (
 	"time"
 )
 
+// DataType represents the type of data stored
+type DataType int
+
+const (
+	TypeString DataType = iota
+	TypeList
+)
+
 // Entry represents a value in the store with optional expiry
 type Entry struct {
-	Value     string
-	ExpiresAt int64 // unix ms, 0 means no expiry
+	Type      DataType
+	Value     string   // for string values
+	List      []string // for list values
+	ExpiresAt int64    // unix ms, 0 means no expiry
 }
 
 // Store represents a thread-safe key-value store with expiry support
@@ -24,7 +34,7 @@ func New() *Store {
 	}
 }
 
-// Set stores a value with optional expiry
+// Set stores a string value with optional expiry
 func (s *Store) Set(key, value string, expiryMs int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -35,18 +45,19 @@ func (s *Store) Set(key, value string, expiryMs int64) {
 	}
 
 	s.data[key] = Entry{
+		Type:      TypeString,
 		Value:     value,
 		ExpiresAt: expiresAt,
 	}
 }
 
-// Get retrieves a value, considering expiry
+// Get retrieves a string value, considering expiry
 func (s *Store) Get(key string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	entry, exists := s.data[key]
-	if !exists {
+	if !exists || entry.Type != TypeString {
 		return "", false
 	}
 
@@ -56,4 +67,25 @@ func (s *Store) Get(key string) (string, bool) {
 	}
 
 	return entry.Value, true
+}
+
+// RPush appends values to a list and returns the new length
+func (s *Store) RPush(key string, values ...string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.data[key]
+	if !exists || entry.Type != TypeList {
+		// Create new list if doesn't exist or isn't a list
+		s.data[key] = Entry{
+			Type: TypeList,
+			List: values,
+		}
+		return len(values)
+	}
+
+	// Append to existing list
+	entry.List = append(entry.List, values...)
+	s.data[key] = entry
+	return len(entry.List)
 }
