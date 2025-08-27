@@ -41,25 +41,17 @@ func handleConnection(conn net.Conn) {
 		text := scanner.Text()
 		fmt.Println("Received command: " + text)
 
-		// Collect RESP parts
 		parts = append(parts, text)
 
-		// If we have enough parts for a simple command
-		if len(parts) >= 3 {
-			cmd := strings.ToUpper(parts[2])
-			if cmd == "PING" {
-				conn.Write([]byte("+PONG\r\n"))
-				parts = nil // reset for next command
-			} else if cmd == "ECHO" && len(parts) >= 4 {
-				// parts[3] is the argument
-				arg := parts[3]
-				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
-				conn.Write([]byte(resp))
-				parts = nil // reset for next command
-			} else if len(parts) >= 4 {
-				conn.Write([]byte("-Error invalid command\r\n"))
-				parts = nil // reset for next command
-			}
+		// Handle ECHO command with 5 parts
+		if len(parts) == 5 && strings.ToUpper(parts[2]) == "ECHO" {
+			arg := parts[4]
+			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
+			conn.Write([]byte(resp))
+			parts = nil
+		} else if len(parts) == 3 && strings.ToUpper(parts[2]) == "PING" {
+			conn.Write([]byte("+PONG\r\n"))
+			parts = nil
 		}
 	}
 }
