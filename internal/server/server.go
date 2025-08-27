@@ -312,5 +312,47 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			resp := fmt.Sprintf("+%s\r\n", typeStr)
 			conn.Write([]byte(resp))
 		}
+
+	case "XADD":
+		if len(parts) < 9 || len(parts)%2 != 1 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'xadd' command\r\n"))
+			return
+		}
+		key := parts[4]
+		streamID := parts[6]
+
+		// Parse stream ID
+		var id *storage.StreamID
+		if streamID != "*" {
+			parsedID, err := storage.ParseStreamID(streamID)
+			if err != nil {
+				conn.Write([]byte(fmt.Sprintf("-ERR invalid stream ID: %v\r\n", err)))
+				return
+			}
+			id = &parsedID
+		}
+
+		// Parse field-value pairs
+		fields := make(map[string]string)
+		for i := 8; i < len(parts); i += 4 {
+			field := parts[i]
+			if i+2 >= len(parts) {
+				conn.Write([]byte("-ERR unbalanced stream field-value pairs\r\n"))
+				return
+			}
+			value := parts[i+2]
+			fields[field] = value
+		}
+
+		// Add to stream
+		newID, err := s.store.XADD(key, id, fields)
+		if err != nil {
+			conn.Write([]byte(fmt.Sprintf("-ERR %v\r\n", err)))
+			return
+		}
+
+		// Return the new entry's ID
+		resp := fmt.Sprintf("$%d\r\n%s\r\n", len(newID.String()), newID.String())
+		conn.Write([]byte(resp))
 	}
 }
