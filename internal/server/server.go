@@ -326,7 +326,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		if streamID != "*" {
 			parsedID, err := storage.ParseStreamID(streamID)
 			if err != nil {
-				conn.Write([]byte(fmt.Sprintf("-ERR invalid stream ID: %v\r\n", err)))
+				conn.Write([]byte(fmt.Sprintf("-%s\r\n", err.Error())))
 				return
 			}
 			id = &parsedID
