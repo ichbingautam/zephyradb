@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codecrafters-io/redis-starter-go/internal/types"
+
 	"github.com/codecrafters-io/redis-starter-go/internal/storage"
 )
 
@@ -284,6 +286,30 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			}
 
 			resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
+			conn.Write([]byte(resp))
+		}
+
+	case "TYPE":
+		if len(parts) == 5 {
+			key := parts[4]
+			entry, exists := s.store.Get(key)
+			if !exists {
+				conn.Write([]byte("+none\r\n"))
+				return
+			}
+
+			var typeStr string
+			switch entry.Type {
+			case types.TypeString:
+				typeStr = "string"
+			case types.TypeList:
+				typeStr = "list"
+			case types.TypeStream:
+				typeStr = "stream"
+			default:
+				typeStr = "none"
+			}
+			resp := fmt.Sprintf("+%s\r\n", typeStr)
 			conn.Write([]byte(resp))
 		}
 	}
