@@ -138,6 +138,45 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			conn.Write([]byte(resp))
 		}
 
+	case "LPOP":
+		if len(parts) < 5 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'lpop' command\r\n"))
+			return
+		}
+		key := parts[4]
+		count := int64(1)
+		if len(parts) >= 7 {
+			var err error
+			count, err = strconv.ParseInt(parts[6], 10, 64)
+			if err != nil {
+				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+				return
+			}
+		}
+
+		values, ok := s.store.LPop(key, count)
+		if !ok {
+			conn.Write([]byte("$-1\r\n"))
+			return
+		}
+
+		if len(parts) >= 7 {
+			// Multi-element response
+			resp := fmt.Sprintf("*%d\r\n", len(values))
+			for _, v := range values {
+				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(v), v)
+			}
+			conn.Write([]byte(resp))
+		} else {
+			// Single-element response
+			if len(values) == 0 {
+				conn.Write([]byte("$-1\r\n"))
+			} else {
+				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(values[0]), values[0])
+				conn.Write([]byte(resp))
+			}
+		}
+
 	case "LLEN":
 		if len(parts) == 5 {
 			key := parts[4]

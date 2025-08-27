@@ -256,7 +256,7 @@ func (s *Store) BLPop(ctx context.Context, timeout float64, keys ...string) (key
 }
 
 // RPush appends values to a list and returns the new length
-func (s *Store) RPush(key string, values ...string) int {
+func (s *Store) RPush(key string, values ...string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -267,11 +267,11 @@ func (s *Store) RPush(key string, values ...string) int {
 			Type: types.TypeList,
 			List: values,
 		}
-		return len(values)
+		return int64(len(values))
 	}
 
 	// Append to existing list
 	entry.List = append(entry.List, values...)
 	s.data[key] = entry
-	return len(entry.List)
+	return int64(len(entry.List))
 }
