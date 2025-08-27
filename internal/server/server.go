@@ -355,5 +355,40 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		// Return the new entry's ID
 		resp := fmt.Sprintf("$%d\r\n%s\r\n", len(newID.String()), newID.String())
 		conn.Write([]byte(resp))
+
+	case "XRANGE":
+		if len(parts) != 9 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'xrange' command\r\n"))
+			return
+		}
+		key := parts[4]
+		start := parts[6]
+		end := parts[8]
+
+		entries, err := s.store.XRANGE(key, start, end)
+		if err != nil {
+			conn.Write([]byte(fmt.Sprintf("-ERR %v\r\n", err)))
+			return
+		}
+
+		// Format as RESP array of arrays
+		// Top level array
+		resp := fmt.Sprintf("*%d\r\n", len(entries))
+		for _, entry := range entries {
+			// Each entry is an array with ID and field array
+			resp += "*2\r\n"
+			// Entry ID
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(entry.ID.String()), entry.ID.String())
+			// Field array
+			fieldCount := len(entry.Fields) * 2 // Each field has key and value
+			resp += fmt.Sprintf("*%d\r\n", fieldCount)
+			for k, v := range entry.Fields {
+				// Field key
+				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(k), k)
+				// Field value
+				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(v), v)
+			}
+		}
+		conn.Write([]byte(resp))
 	}
 }

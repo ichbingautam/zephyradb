@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/codecrafters-io/redis-starter-go/internal/types"
 )
@@ -65,20 +66,25 @@ func (s *Store) XRANGE(key string, start, end string) ([]StreamEntry, error) {
 	var err error
 
 	if start == "-" {
-		startID = StreamID{Time: -1, Sequence: 0}
+		// Special start marker: use lowest possible ID
+		startID = StreamID{Time: 0, Sequence: 0}
 	} else {
 		startID, err = ParseStreamID(start)
 		if err != nil {
-			return nil, fmt.Errorf("invalid start ID: %v", err)
+			return nil, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
 		}
 	}
 
 	if end == "+" {
-		endID = StreamID{Time: -1, Sequence: 0}
+		// Special end marker: Redis uses max int64 for both timestamp and sequence
+		endID = StreamID{Time: 1<<63 - 1, Sequence: 1<<63 - 1}
+	} else if strings.Contains(end, "*") {
+		// Reject any ID containing * in the end position
+		return nil, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
 	} else {
 		endID, err = ParseStreamID(end)
 		if err != nil {
-			return nil, fmt.Errorf("invalid end ID: %v", err)
+			return nil, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
 		}
 	}
 

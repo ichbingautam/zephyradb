@@ -23,29 +23,40 @@ func (id StreamID) String() string {
 
 // ParseStreamID parses a Redis stream ID string into a StreamID struct
 func ParseStreamID(id string) (StreamID, error) {
-	parts := strings.Split(id, "-")
-	if len(parts) != 2 {
-		return StreamID{}, fmt.Errorf("Invalid stream ID format")
+	// Handle full ID format (timestamp-sequence)
+	if strings.Contains(id, "-") {
+		parts := strings.Split(id, "-")
+		if len(parts) != 2 {
+			return StreamID{}, fmt.Errorf("Invalid stream ID format")
+		}
+
+		// Parse timestamp part
+		ts, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return StreamID{}, fmt.Errorf("Invalid stream ID format")
+		}
+
+		// Handle auto-sequence marker
+		if parts[1] == "*" {
+			return StreamID{Time: ts, Sequence: -1}, nil // -1 indicates auto-sequence
+		}
+
+		// Parse explicit sequence number
+		seq, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return StreamID{}, fmt.Errorf("Invalid stream ID format")
+		}
+
+		return StreamID{Time: ts, Sequence: seq}, nil
 	}
 
-	// Parse timestamp part
-	ts, err := strconv.ParseInt(parts[0], 10, 64)
+	// Handle timestamp-only format (defaults to sequence 0)
+	ts, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
-	// Handle auto-sequence marker
-	if parts[1] == "*" {
-		return StreamID{Time: ts, Sequence: -1}, nil // -1 indicates auto-sequence
-	}
-
-	// Parse explicit sequence number
-	seq, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return StreamID{}, fmt.Errorf("Invalid stream ID format")
-	}
-
-	return StreamID{Time: ts, Sequence: seq}, nil
+	return StreamID{Time: ts, Sequence: 0}, nil
 }
 
 // IsSpecial checks if the ID is a special value like "$" or "-"
@@ -138,8 +149,16 @@ func (s *Stream) Range(start, end StreamID) []StreamEntry {
 
 	var result []StreamEntry
 	for _, entry := range s.entries {
-		if (start.Time == -1 || entry.ID.Time >= start.Time) && // handle "-" special case
-			(end.Time == -1 || entry.ID.Time <= end.Time) { // handle "+" special case
+		// Entry is in range if:
+		// 1. Its timestamp is greater than start timestamp, OR
+		// 2. Same timestamp as start AND sequence >= start sequence
+		// AND
+		// 1. Its timestamp is less than end timestamp, OR
+		// 2. Same timestamp as end AND sequence <= end sequence
+		if (entry.ID.Time > start.Time ||
+			(entry.ID.Time == start.Time && entry.ID.Sequence >= start.Sequence)) &&
+			(entry.ID.Time < end.Time ||
+				(entry.ID.Time == end.Time && entry.ID.Sequence <= end.Sequence)) {
 			result = append(result, entry)
 		}
 	}
