@@ -11,6 +11,13 @@ func (s *Store) XADD(key string, id *StreamID, fields map[string]string) (Stream
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// For a new key or non-existent key, validate ID must be greater than 0-0
+	if id != nil && s.data[key].Type == types.TypeNil {
+		if id.Time <= 0 && id.Sequence <= 0 {
+			return StreamID{}, fmt.Errorf("The ID specified in XADD must be greater than 0-0")
+		}
+	}
+
 	entry := s.data[key]
 	if entry.Type == types.TypeNil {
 		// Create new stream
