@@ -1,3 +1,6 @@
+// Package storage implements Redis's data storage and manipulation functionality.
+// It provides thread-safe operations for storing and retrieving different data types
+// with support for expiry, atomic operations, and blocking commands.
 package storage
 
 import (
@@ -8,28 +11,46 @@ import (
 	"github.com/codecrafters-io/redis-starter-go/internal/types"
 )
 
-// Entry represents a value in the store with optional expiry
+// Entry represents a value stored in Redis with optional expiry.
+// It can hold different types of values (strings, lists) and tracks their expiry time.
 type Entry struct {
-	Type      types.DataType
-	Value     string   // for string values
-	List      []string // for list values
-	ExpiresAt int64    // unix ms, 0 means no expiry
+	// Type indicates the kind of value stored (string, list, etc.)
+	Type types.DataType
+
+	// Value holds the string data for string types
+	Value string
+
+	// List holds the string array for list types
+	List []string
+
+	// ExpiresAt is the Unix timestamp in milliseconds when this entry expires.
+	// A value of 0 means the entry never expires.
+	ExpiresAt int64
 }
 
-// Store represents a thread-safe key-value store with expiry support
+// Store implements a thread-safe key-value store that mimics Redis's data storage.
+// It supports multiple data types, key expiry, and concurrent access.
 type Store struct {
-	mu   sync.RWMutex
+	// mu protects the data map from concurrent access
+	mu sync.RWMutex
+
+	// data stores all key-value pairs
 	data map[string]Entry
 }
 
-// New creates a new Store instance
+// New creates and initializes a new Store instance.
+// It initializes an empty thread-safe map for storing key-value pairs.
 func New() *Store {
 	return &Store{
 		data: make(map[string]Entry),
 	}
 }
 
-// Set stores a string value with optional expiry
+// Set stores or updates a string value with optional expiry.
+// Parameters:
+//   - key: The key under which to store the value
+//   - value: The string value to store
+//   - expiryMs: Expiry time in milliseconds. 0 means no expiry.
 func (s *Store) Set(key, value string, expiryMs int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,7 +115,13 @@ func (s *Store) GetList(key string) ([]string, bool) {
 	return entry.List, true
 }
 
-// LLen returns the length of a list
+// LLen returns the length of a list stored at the specified key.
+// If the key does not exist or is not a list, returns 0.
+// Parameters:
+//   - key: The key identifying the list
+//
+// Returns:
+//   - The number of elements in the list, or 0 if key doesn't exist
 func (s *Store) LLen(key string) int64 {
 	list, exists := s.GetList(key)
 	if !exists {
@@ -103,7 +130,22 @@ func (s *Store) LLen(key string) int64 {
 	return int64(len(list))
 }
 
-// LPush prepends values to a list and returns the new length
+// LPush inserts a new element at the beginning (left side) of a list.
+// If the key does not exist, it is created as an empty list before the operation.
+// If the key exists but is not a list, it returns an error.
+// Parameters:
+//   - key: The key identifying the list
+//   - value: The value to insert at the beginning of the list
+//
+// Returns:
+//   - The length of the list after the push operation
+//
+// Parameters:
+//   - key: The key identifying the list
+//   - values: One or more values to prepend to the list
+//
+// Returns:
+//   - The length of the list after the push operation
 func (s *Store) LPush(key string, values ...string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,7 +175,15 @@ func (s *Store) LPush(key string, values ...string) int64 {
 	return int64(len(newList))
 }
 
-// LRange returns a range of elements from a list
+// LRange returns a subset of elements from a list stored at the specified key.
+// Parameters:
+//   - key: The key identifying the list
+//   - start: Starting index (0-based). If negative, counts from end (-1 = last element)
+//   - stop: Ending index (inclusive). If negative, counts from end (-1 = last element)
+//
+// Returns:
+//   - A slice of values from the specified range. Returns empty slice if key doesn't exist
+//   - Out of range indexes are handled by limiting to valid range
 func (s *Store) LRange(key string, start, stop int64) []string {
 	list, exists := s.GetList(key)
 	if !exists {
@@ -164,7 +214,26 @@ func (s *Store) LRange(key string, start, stop int64) []string {
 	return list[start : stop+1]
 }
 
-// LRem removes elements equal to value from the list
+// LRem removes elements equal to the specified value from the list.
+// Parameters:
+//   - key: The key identifying the list
+//   - count: The number of elements to remove and direction:
+//   - count > 0: Remove up to count elements from head to tail
+//   - count < 0: Remove up to count elements from tail to head
+//   - count = 0: Remove all elements equal to value
+//   - value: The value to match for removal
+//
+// Returns:
+//   - The number of removed elements
+//
+// If key does not exist, it is treated as an empty list and the command returns zero.
+// Parameters:
+//   - key: The key identifying the list
+//   - count: The number of elements to remove and direction
+//   - value: The value to remove from the list
+//
+// Returns:
+//   - The number of elements removed
 func (s *Store) LRem(key string, count int64, value string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -213,7 +282,22 @@ func (s *Store) LRem(key string, count int64, value string) int64 {
 	return removed
 }
 
-// BLPop blocks until an element is available in one of the lists
+// BLPop is a blocking list pop operation that waits for data in multiple lists.
+// It removes and returns an element from the first non-empty list found.
+// The operation blocks until one of the following conditions is met:
+//   - An element becomes available in one of the lists
+//   - The specified timeout is reached
+//   - The context is cancelled
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - timeout: Maximum time to block in seconds (0 means block indefinitely)
+//   - keys: One or more list keys to monitor
+//
+// Returns:
+//   - key: The key from which the element was popped
+//   - value: The popped element
+//   - ok: True if an element was popped, false if timeout/cancelled
 func (s *Store) BLPop(ctx context.Context, timeout float64, keys ...string) (key string, value string, ok bool) {
 	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
 
@@ -255,7 +339,22 @@ func (s *Store) BLPop(ctx context.Context, timeout float64, keys ...string) (key
 	}
 }
 
-// RPush appends values to a list and returns the new length
+// RPush inserts a new element at the end (right side) of a list.
+// If the key does not exist, it is created as an empty list before the operation.
+// If the key exists but is not a list, it returns an error.
+// Parameters:
+//   - key: The key identifying the list
+//   - value: The value to append to the end of the list
+//
+// Returns:
+//   - The length of the list after the push operation
+//
+// Parameters:
+//   - key: The key identifying the list
+//   - values: One or more values to append to the list
+//
+// Returns:
+//   - The length of the list after the push operation
 func (s *Store) RPush(key string, values ...string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()

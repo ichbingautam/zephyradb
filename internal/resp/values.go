@@ -2,20 +2,30 @@ package resp
 
 import "fmt"
 
-// Value represents a RESP protocol value
+// Value represents a RESP (REdis Serialization Protocol) value.
+// This interface is implemented by all RESP data types including
+// Simple Strings, Errors, Integers, Bulk Strings and Arrays.
 type Value interface {
-	// Format returns the RESP encoded value
+	// Format returns the RESP wire protocol encoded bytes for this value.
+	// The returned bytes should follow the RESP specification format:
+	// https://redis.io/docs/reference/protocol-spec/
 	Format() []byte
 }
 
-// SimpleString represents a RESP Simple String
+// SimpleString represents a RESP Simple String type.
+// In the RESP protocol, Simple Strings are prefixed with "+" and can't contain newlines.
+// They are typically used for simple status replies like "OK".
 type SimpleString string
 
+// Format encodes a Simple String in RESP format.
+// The encoded format is: "+<string>\r\n"
 func (s SimpleString) Format() []byte {
 	return []byte("+" + string(s) + "\r\n")
 }
 
-// Error represents a RESP Error
+// Error represents a RESP Error type.
+// RESP Errors are used to return error messages to clients
+// and are prefixed with "-" in the protocol.
 type Error string
 
 func (e Error) Format() []byte {

@@ -1,3 +1,6 @@
+// Package server implements the Redis server protocol and command handling.
+// It provides TCP connection handling, RESP protocol parsing, and command routing
+// to the appropriate storage operations.
 package server
 
 import (
@@ -11,19 +14,45 @@ import (
 	"github.com/codecrafters-io/redis-starter-go/internal/storage"
 )
 
-// Server represents a Redis server
+// Server represents a Redis-compatible server that handles client connections
+// and executes Redis commands. It implements the core Redis server functionality
+// including:
+//   - TCP connection handling
+//   - RESP protocol parsing
+//   - Command routing and execution
+//   - Data persistence
+//   - Pub/Sub messaging
 type Server struct {
+	// store is the thread-safe storage engine that handles all data operations
 	store *storage.Store
 }
 
-// New creates a new Server instance
+// New creates and initializes a new Server instance with a fresh storage backend.
+// The server supports the full range of Redis commands and maintains data
+// consistency across concurrent client connections.
+//
+// Returns:
+//   - A new Server instance ready to accept connections
 func New() *Server {
 	return &Server{
 		store: storage.New(),
 	}
 }
 
-// Start starts the server on the specified address
+// Start initializes the server and begins listening for client connections.
+// It accepts TCP connections on the specified address and spawns a goroutine
+// to handle each connection independently.
+// Start begins listening for Redis client connections on the specified address.
+// For each new connection, it spawns a goroutine to handle client commands.
+// The server continues running until an error occurs or it is explicitly stopped.
+//
+// Parameters:
+//   - addr: The network address to listen on (e.g., "localhost:6379")
+//
+// Returns:
+//   - An error if the server fails to start or encounters a fatal error
+//
+// This is a blocking call that runs indefinitely while handling connections.
 func (s *Server) Start(addr string) error {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -43,6 +72,20 @@ func (s *Server) Start(addr string) error {
 	}
 }
 
+// handleConnection processes a single client connection.
+// It reads RESP-formatted commands from the connection, executes them,
+// and writes the responses back to the client. The connection is
+// automatically closed when the client disconnects or an error occurs.
+//
+// The method handles these responsibilities:
+//   - Reading commands using the RESP protocol
+//   - Parsing and validating command arguments
+//   - Executing commands against the storage
+//   - Writing formatted responses back to the client
+//   - Managing connection state and cleanup
+//
+// Parameters:
+//   - conn: The TCP connection to the client
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
