@@ -12,14 +12,16 @@ var _ = os.Exit
 
 var _ = os.Exit
 func main() {
-	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	l, err := net.Listen("tcp", "0.0.0.0:6380")
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
 	}
-	_, err = l.Accept()
+	fmt.Println("Start to bind to port 6380")
+  conn, err := l.Accept()
 	if err != nil {
 		fmt.Println("Error accepting connection: ", err.Error())
 		os.Exit(1)
 	}
+	conn.Write([]byte("+PONG\r\n"))
 }
