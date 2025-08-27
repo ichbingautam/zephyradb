@@ -14,7 +14,8 @@ func (s *Store) LPop(key string, count int64) ([]string, bool) {
 		return nil, false
 	}
 
-	listLen := len(entry.List)
+	list := entry.Value.([]string)
+	listLen := len(list)
 	if listLen == 0 {
 		return nil, false
 	}
@@ -31,12 +32,12 @@ func (s *Store) LPop(key string, count int64) ([]string, bool) {
 
 	// Get the first count elements and update the list
 	values := make([]string, count)
-	copy(values, entry.List[:count])
+	copy(values, list[:count])
 
 	if count == int64(listLen) {
 		delete(s.data, key)
 	} else {
-		entry.List = entry.List[count:]
+		entry.Value = list[count:]
 		s.data[key] = entry
 	}
 

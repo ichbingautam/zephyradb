@@ -100,7 +100,7 @@ func (c *LRangeCommand) Execute(ctx context.Context, store *storage.Store) resp.
 		values[i] = resp.BulkString{Value: elem}
 	}
 
-	return resp.Array{Values: values}
+	return resp.Array(values)
 }
 
 // LREM command implementation
@@ -161,12 +161,12 @@ func NewBLPopCommand(args []string) (*BLPopCommand, error) {
 func (c *BLPopCommand) Execute(ctx context.Context, store *storage.Store) resp.Value {
 	key, value, ok := store.BLPop(ctx, c.timeout, c.keys...)
 	if !ok {
-		return resp.BulkString{IsNull: true}
+		return resp.Nil{}
 	}
 
 	values := []resp.Value{
 		resp.BulkString{Value: key},
 		resp.BulkString{Value: value},
 	}
-	return resp.Array{Values: values}
+	return resp.Array(values)
 }

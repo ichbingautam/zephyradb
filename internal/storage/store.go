@@ -12,16 +12,17 @@ import (
 )
 
 // Entry represents a value stored in Redis with optional expiry.
-// It can hold different types of values (strings, lists) and tracks their expiry time.
+// It can hold different types of values (strings, lists, streams) and tracks their expiry time.
 type Entry struct {
-	// Type indicates the kind of value stored (string, list, etc.)
+	// Type indicates the kind of value stored (string, list, stream, etc.)
 	Type types.DataType
 
-	// Value holds the string data for string types
-	Value string
-
-	// List holds the string array for list types
-	List []string
+	// Value holds the actual data for this entry.
+	// The concrete type depends on the Type field:
+	// - For TypeString: string
+	// - For TypeList: []string
+	// - For TypeStream: *Stream
+	Value any
 
 	// ExpiresAt is the Unix timestamp in milliseconds when this entry expires.
 	// A value of 0 means the entry never expires.
@@ -100,7 +101,11 @@ func (s *Store) GetString(key string) (string, bool) {
 	if entry.Type != types.TypeString {
 		return "", false
 	}
-	return entry.Value, true
+	value, ok := entry.Value.(string)
+	if !ok {
+		return "", false
+	}
+	return value, true
 }
 
 // GetList returns a list by key
@@ -112,7 +117,11 @@ func (s *Store) GetList(key string) ([]string, bool) {
 	if entry.Type != types.TypeList {
 		return nil, false
 	}
-	return entry.List, true
+	list, ok := entry.Value.([]string)
+	if !ok {
+		return nil, false
+	}
+	return list, true
 }
 
 // LLen returns the length of a list stored at the specified key.
@@ -158,19 +167,20 @@ func (s *Store) LPush(key string, values ...string) int64 {
 			reversed[len(values)-1-i] = v
 		}
 		s.data[key] = Entry{
-			Type: types.TypeList,
-			List: reversed,
+			Type:  types.TypeList,
+			Value: reversed,
 		}
 		return int64(len(values))
 	}
 
 	// Prepend to existing list
-	newList := make([]string, len(values)+len(entry.List))
-	copy(newList[len(values):], entry.List)
+	existingList, _ := entry.Value.([]string)
+	newList := make([]string, len(values)+len(existingList))
+	copy(newList[len(values):], existingList)
 	for i, v := range values {
 		newList[len(values)-1-i] = v
 	}
-	entry.List = newList
+	entry.Value = newList
 	s.data[key] = entry
 	return int64(len(newList))
 }
@@ -243,7 +253,7 @@ func (s *Store) LRem(key string, count int64, value string) int64 {
 		return 0
 	}
 
-	list := entry.List
+	list, _ := entry.Value.([]string)
 	var removed int64
 	var newList []string
 
@@ -277,7 +287,7 @@ func (s *Store) LRem(key string, count int64, value string) int64 {
 		}
 	}
 
-	entry.List = newList
+	entry.Value = newList
 	s.data[key] = entry
 	return removed
 }
@@ -306,11 +316,15 @@ func (s *Store) BLPop(ctx context.Context, timeout float64, keys ...string) (key
 		// Try each list
 		for _, k := range keys {
 			entry, exists := s.data[k]
-			if exists && entry.Type == types.TypeList && len(entry.List) > 0 {
+			if exists && entry.Type == types.TypeList {
+				list, ok := entry.Value.([]string)
+				if !ok || len(list) == 0 {
+					continue
+				}
 				// Get first element
-				value := entry.List[0]
+				value := list[0]
 				// Remove first element
-				entry.List = entry.List[1:]
+				entry.Value = list[1:]
 				s.data[k] = entry
 				s.mu.Unlock()
 				return k, value, true
@@ -363,14 +377,16 @@ func (s *Store) RPush(key string, values ...string) int64 {
 	if !exists || entry.Type != types.TypeList {
 		// Create new list if doesn't exist or isn't a list
 		s.data[key] = Entry{
-			Type: types.TypeList,
-			List: values,
+			Type:  types.TypeList,
+			Value: values,
 		}
 		return int64(len(values))
 	}
 
 	// Append to existing list
-	entry.List = append(entry.List, values...)
+	list, _ := entry.Value.([]string)
+	newList := append(list, values...)
+	entry.Value = newList
 	s.data[key] = entry
-	return int64(len(entry.List))
+	return int64(len(newList))
 }

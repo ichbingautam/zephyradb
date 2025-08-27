@@ -28,8 +28,25 @@ func (s SimpleString) Format() []byte {
 // and are prefixed with "-" in the protocol.
 type Error string
 
+// Format encodes an Error in RESP format.
+// The encoded format is: "-<error>\r\n"
 func (e Error) Format() []byte {
 	return []byte("-" + string(e) + "\r\n")
+}
+
+// NewError creates a new Error with the given message
+func NewError(msg string) Error {
+	return Error(msg)
+}
+
+// Nil represents a RESP Null value.
+// In RESP, nulls are encoded as "$-1\r\n" for Bulk Strings
+// or "*-1\r\n" for Arrays.
+type Nil struct{}
+
+// Format encodes a Nil value in RESP format as a null array
+func (n Nil) Format() []byte {
+	return []byte("*-1\r\n")
 }
 
 // Integer represents a RESP Integer
@@ -53,17 +70,14 @@ func (b BulkString) Format() []byte {
 }
 
 // Array represents a RESP Array
-type Array struct {
-	Values []Value
-	IsNull bool
-}
+type Array []Value
 
 func (a Array) Format() []byte {
-	if a.IsNull {
-		return []byte("*-1\r\n")
+	if len(a) == 0 {
+		return []byte("*0\r\n")
 	}
-	result := []byte(fmt.Sprintf("*%d\r\n", len(a.Values)))
-	for _, v := range a.Values {
+	result := []byte(fmt.Sprintf("*%d\r\n", len(a)))
+	for _, v := range a {
 		result = append(result, v.Format()...)
 	}
 	return result
