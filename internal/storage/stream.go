@@ -28,16 +28,18 @@ func ParseStreamID(id string) (StreamID, error) {
 		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
-	// Handle special sequence value "*" by rejecting it
-	if parts[1] == "*" {
-		return StreamID{}, fmt.Errorf("Invalid stream ID format")
-	}
-
+	// Parse timestamp part
 	ts, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
+	// Handle auto-sequence marker
+	if parts[1] == "*" {
+		return StreamID{Time: ts, Sequence: -1}, nil // -1 indicates auto-sequence
+	}
+
+	// Parse explicit sequence number
 	seq, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
 		return StreamID{}, fmt.Errorf("Invalid stream ID format")
@@ -90,16 +92,32 @@ func (s *Stream) Add(fields map[string]string, requestedID *StreamID) (StreamID,
 			newID = StreamID{Time: now, Sequence: 0}
 		}
 	} else {
-		// First check if ID is 0-0 or less
-		if requestedID.Time <= 0 && requestedID.Sequence <= 0 {
-			return StreamID{}, fmt.Errorf("The ID specified in XADD must be greater than 0-0")
+		// Handle auto-sequence case (sequence = -1)
+		if requestedID.Sequence == -1 {
+			// For time 0, start sequence at 1
+			if requestedID.Time == 0 {
+				newID = StreamID{Time: 0, Sequence: 1}
+			} else if requestedID.Time == s.lastID.Time {
+				// Same timestamp as last entry, increment sequence
+				newID = StreamID{Time: requestedID.Time, Sequence: s.lastID.Sequence + 1}
+			} else if requestedID.Time > s.lastID.Time {
+				// New timestamp, start sequence at 0
+				newID = StreamID{Time: requestedID.Time, Sequence: 0}
+			} else {
+				// Time is less than last entry
+				return StreamID{}, fmt.Errorf("The ID specified in XADD is equal or smaller than the target stream top item")
+			}
+		} else {
+			// Handle explicit sequence number
+			if requestedID.Time <= 0 && requestedID.Sequence <= 0 {
+				return StreamID{}, fmt.Errorf("The ID specified in XADD must be greater than 0-0")
+			}
+			if requestedID.Time < s.lastID.Time ||
+				(requestedID.Time == s.lastID.Time && requestedID.Sequence <= s.lastID.Sequence) {
+				return StreamID{}, fmt.Errorf("The ID specified in XADD is equal or smaller than the target stream top item")
+			}
+			newID = *requestedID
 		}
-		// Then check if ID is less than or equal to last ID
-		if requestedID.Time < s.lastID.Time ||
-			(requestedID.Time == s.lastID.Time && requestedID.Sequence <= s.lastID.Sequence) {
-			return StreamID{}, fmt.Errorf("The ID specified in XADD is equal or smaller than the target stream top item")
-		}
-		newID = *requestedID
 	}
 
 	entry := StreamEntry{
