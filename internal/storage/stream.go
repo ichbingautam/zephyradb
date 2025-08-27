@@ -25,22 +25,22 @@ func (id StreamID) String() string {
 func ParseStreamID(id string) (StreamID, error) {
 	parts := strings.Split(id, "-")
 	if len(parts) != 2 {
-		return StreamID{}, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
+		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
 	// Handle special sequence value "*" by rejecting it
 	if parts[1] == "*" {
-		return StreamID{}, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
+		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
 	ts, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		return StreamID{}, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
+		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
 	seq, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return StreamID{}, fmt.Errorf("ERR Invalid stream ID specified as stream command argument")
+		return StreamID{}, fmt.Errorf("Invalid stream ID format")
 	}
 
 	return StreamID{Time: ts, Sequence: seq}, nil
