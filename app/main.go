@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
@@ -16,23 +17,28 @@ var _ = os.Exit
 var _ = os.Exit
 
 func main() {
-       l, err := net.Listen("tcp", "0.0.0.0:6379")
-       if err != nil {
-	       fmt.Println("Failed to bind to port 6379")
-	       os.Exit(1)
-       }
-       fmt.Println("Start to bind to port 6379")
-       for {
-	       conn, err := l.Accept()
-	       if err != nil {
-		       fmt.Println("Error accepting connection: ", err.Error())
-		       continue
-	       }
-	       go handleConnection(conn)
-       }
+	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	if err != nil {
+		fmt.Println("Failed to bind to port 6379")
+		os.Exit(1)
+	}
+	fmt.Println("Start to bind to port 6379")
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			continue
+		}
+		go handleConnection(conn)
+	}
 }
 
-var store = make(map[string]string)
+type entry struct {
+	value     string
+	expiresAt int64 // unix ms, 0 means no expiry
+}
+
+var store = make(map[string]entry)
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
@@ -56,7 +62,6 @@ func handleConnection(conn net.Conn) {
 		parts = append(parts, text)
 
 		if expectedParts > 0 && len(parts) == expectedParts {
-			// Parse command and arguments
 			cmdIdx := 2
 			cmd := strings.ToUpper(parts[cmdIdx])
 			if cmd == "PING" {
@@ -65,16 +70,31 @@ func handleConnection(conn net.Conn) {
 				arg := parts[4]
 				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
 				conn.Write([]byte(resp))
-			} else if cmd == "SET" && expectedParts == 7 {
+			} else if cmd == "SET" {
 				key := parts[4]
 				value := parts[6]
-				store[key] = value
+				var expiresAt int64 = 0
+				// Look for PX argument (case-insensitive)
+				if expectedParts == 11 {
+					// SET key value PX ms
+					pxIdx := 8
+					pxArg := strings.ToUpper(parts[pxIdx])
+					if pxArg == "PX" {
+						msStr := parts[10]
+						ms, err := strconv.ParseInt(msStr, 10, 64)
+						if err == nil {
+							expiresAt = nowMs() + ms
+						}
+					}
+				}
+				store[key] = entry{value: value, expiresAt: expiresAt}
 				conn.Write([]byte("+OK\r\n"))
 			} else if cmd == "GET" && expectedParts == 5 {
 				key := parts[4]
-				value, ok := store[key]
-				if ok {
-					resp := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+				ent, ok := store[key]
+				expired := ent.expiresAt > 0 && nowMs() > ent.expiresAt
+				if ok && !expired {
+					resp := fmt.Sprintf("$%d\r\n%s\r\n", len(ent.value), ent.value)
 					conn.Write([]byte(resp))
 				} else {
 					conn.Write([]byte("$-1\r\n")) // RESP nil
@@ -89,9 +109,13 @@ func handleConnection(conn net.Conn) {
 
 // Helper to parse RESP array length
 func parseArrayLength(line string) (int, error) {
-       if strings.HasPrefix(line, "*") {
-	       return strconv.Atoi(line[1:])
-       }
-       return 0, fmt.Errorf("not an array header")
+	if strings.HasPrefix(line, "*") {
+		return strconv.Atoi(line[1:])
+	}
+	return 0, fmt.Errorf("not an array header")
 }
 
+// Helper to get current time in ms
+func nowMs() int64 {
+	return time.Now().UnixMilli()
+}
