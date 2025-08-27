@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codecrafters-io/redis-starter-go/internal/resp"
 	"github.com/codecrafters-io/redis-starter-go/internal/storage"
 )
 
@@ -55,7 +54,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		fmt.Println("Received command:", text)
 
 		if len(parts) == 0 && strings.HasPrefix(text, "*") {
-			n, err := resp.ParseArrayLength(text)
+			n, err := strconv.Atoi(text[1:])
 			if err == nil {
 				expectedParts = n*2 + 1 // Array header + pairs of ($len, value)
 			}
@@ -106,7 +105,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 	case "GET":
 		if len(parts) == 5 {
 			key := parts[4]
-			if value, ok := s.store.Get(key); ok {
+			if value, exists := s.store.GetString(key); exists {
 				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
 				conn.Write([]byte(resp))
 			} else {
@@ -115,10 +114,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		}
 
 	case "RPUSH":
-		if len(parts) >= 7 { // *N, $5, RPUSH, $key_len, key, $val_len, value, ...
+		if len(parts) >= 7 {
 			key := parts[4]
-			var values []string
-			// Collect all values (they're at even indices starting from 6)
+			values := make([]string, 0)
 			for i := 6; i < len(parts); i += 2 {
 				values = append(values, parts[i])
 			}

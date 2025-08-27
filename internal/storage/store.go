@@ -3,19 +3,13 @@ package storage
 import (
 	"sync"
 	"time"
-)
 
-// DataType represents the type of data stored
-type DataType int
-
-const (
-	TypeString DataType = iota
-	TypeList
+	"github.com/codecrafters-io/redis-starter-go/internal/types"
 )
 
 // Entry represents a value in the store with optional expiry
 type Entry struct {
-	Type      DataType
+	Type      types.DataType
 	Value     string   // for string values
 	List      []string // for list values
 	ExpiresAt int64    // unix ms, 0 means no expiry
@@ -45,27 +39,45 @@ func (s *Store) Set(key, value string, expiryMs int64) {
 	}
 
 	s.data[key] = Entry{
-		Type:      TypeString,
+		Type:      types.TypeString,
 		Value:     value,
 		ExpiresAt: expiresAt,
 	}
 }
 
-// Get retrieves a string value, considering expiry
-func (s *Store) Get(key string) (string, bool) {
+// Get retrieves a value by key
+func (s *Store) Get(key string) (*Entry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	entry, exists := s.data[key]
-	if !exists || entry.Type != TypeString {
-		return "", false
+	if !exists {
+		return nil, false
 	}
 
 	// Check expiry
 	if entry.ExpiresAt > 0 && time.Now().UnixMilli() > entry.ExpiresAt {
-		return "", false
+		// Cleanup expired key
+		s.mu.RUnlock()
+		s.mu.Lock()
+		delete(s.data, key)
+		s.mu.Unlock()
+		s.mu.RLock()
+		return nil, false
 	}
 
+	return &entry, true
+}
+
+// GetString retrieves a string value by key
+func (s *Store) GetString(key string) (string, bool) {
+	entry, exists := s.Get(key)
+	if !exists {
+		return "", false
+	}
+	if entry.Type != types.TypeString {
+		return "", false
+	}
 	return entry.Value, true
 }
 
@@ -75,10 +87,10 @@ func (s *Store) RPush(key string, values ...string) int {
 	defer s.mu.Unlock()
 
 	entry, exists := s.data[key]
-	if !exists || entry.Type != TypeList {
+	if !exists || entry.Type != types.TypeList {
 		// Create new list if doesn't exist or isn't a list
 		s.data[key] = Entry{
-			Type: TypeList,
+			Type: types.TypeList,
 			List: values,
 		}
 		return len(values)
