@@ -102,8 +102,9 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 			return formatXReadResponse(keys, allEntries)
 		}
 
-		// If we get here, the context was cancelled
-		return resp.BulkString{IsNull: true}
+		// If we get here, the context was cancelled or timed out with no data
+		// Return a null array (consistent with Redis behavior)
+		return resp.Array{resp.BulkString{IsNull: true}}
 	}
 
 	// Non-blocking read
@@ -180,8 +181,8 @@ func formatXReadResponse(keys []string, allEntries map[string][]storage.StreamEn
 	}
 
 	if len(results) == 0 {
-		// If no results, return nil array (consistent with Redis behavior)
-		return resp.Array(nil)
+		// If no results, return a null array (consistent with Redis behavior)
+		return resp.Array{resp.BulkString{IsNull: true}}
 	}
 
 	// Return array of results
