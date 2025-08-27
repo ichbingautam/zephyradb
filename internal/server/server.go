@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -122,6 +123,85 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			}
 			length := s.store.RPush(key, values...)
 			resp := fmt.Sprintf(":%d\r\n", length)
+			conn.Write([]byte(resp))
+		}
+
+	case "LPUSH":
+		if len(parts) >= 7 {
+			key := parts[4]
+			values := make([]string, 0)
+			for i := 6; i < len(parts); i += 2 {
+				values = append(values, parts[i])
+			}
+			length := s.store.LPush(key, values...)
+			resp := fmt.Sprintf(":%d\r\n", length)
+			conn.Write([]byte(resp))
+		}
+
+	case "LLEN":
+		if len(parts) == 5 {
+			key := parts[4]
+			length := s.store.LLen(key)
+			resp := fmt.Sprintf(":%d\r\n", length)
+			conn.Write([]byte(resp))
+		}
+
+	case "LRANGE":
+		if len(parts) == 9 {
+			key := parts[4]
+			start, err := strconv.ParseInt(parts[6], 10, 64)
+			if err != nil {
+				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+				return
+			}
+			stop, err := strconv.ParseInt(parts[8], 10, 64)
+			if err != nil {
+				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+				return
+			}
+
+			elements := s.store.LRange(key, start, stop)
+			resp := fmt.Sprintf("*%d\r\n", len(elements))
+			for _, elem := range elements {
+				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(elem), elem)
+			}
+			conn.Write([]byte(resp))
+		}
+
+	case "LREM":
+		if len(parts) == 9 {
+			key := parts[4]
+			count, err := strconv.ParseInt(parts[6], 10, 64)
+			if err != nil {
+				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+				return
+			}
+			value := parts[8]
+
+			removed := s.store.LRem(key, count, value)
+			resp := fmt.Sprintf(":%d\r\n", removed)
+			conn.Write([]byte(resp))
+		}
+
+	case "BLPOP":
+		if len(parts) >= 7 {
+			keys := make([]string, 0)
+			for i := 4; i < len(parts)-2; i += 2 {
+				keys = append(keys, parts[i])
+			}
+			timeout, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				conn.Write([]byte("-ERR timeout is not a float or out of range\r\n"))
+				return
+			}
+
+			key, value, ok := s.store.BLPop(context.Background(), timeout, keys...)
+			if !ok {
+				conn.Write([]byte("$-1\r\n"))
+				return
+			}
+
+			resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
 			conn.Write([]byte(resp))
 		}
 	}
