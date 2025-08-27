@@ -85,7 +85,11 @@ func (s *Stream) Add(fields map[string]string, requestedID *StreamID) (StreamID,
 			newID = StreamID{Time: now, Sequence: 0}
 		}
 	} else {
-		// Validate requested ID must be greater than last ID
+		// First check if ID is 0-0 or less
+		if requestedID.Time <= 0 && requestedID.Sequence <= 0 {
+			return StreamID{}, fmt.Errorf("The ID specified in XADD must be greater than 0-0")
+		}
+		// Then check if ID is less than or equal to last ID
 		if requestedID.Time < s.lastID.Time ||
 			(requestedID.Time == s.lastID.Time && requestedID.Sequence <= s.lastID.Sequence) {
 			return StreamID{}, fmt.Errorf("The ID specified in XADD is equal or smaller than the target stream top item")

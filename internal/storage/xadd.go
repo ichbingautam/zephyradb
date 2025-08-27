@@ -24,10 +24,6 @@ func (s *Store) XADD(key string, id *StreamID, fields map[string]string) (Stream
 	if entry.Type == types.TypeNil {
 		// Create new stream
 		stream := NewStream()
-		// For a new stream, validate ID must be greater than 0-0
-		if id != nil && id.Time <= 0 && id.Sequence <= 0 {
-			return StreamID{}, fmt.Errorf("The ID specified in XADD must be greater than 0-0")
-		}
 		newID, err := stream.Add(fields, id)
 		if err != nil {
 			return StreamID{}, err
@@ -46,12 +42,6 @@ func (s *Store) XADD(key string, id *StreamID, fields map[string]string) (Stream
 
 	// Get existing stream
 	stream := entry.Value.(*Stream)
-
-	// For an empty stream, validate ID must be greater than 0-0
-	if stream.Len() == 0 && id != nil && id.Time <= 0 && id.Sequence <= 0 {
-		return StreamID{}, fmt.Errorf("The ID specified in XADD must be greater than 0-0")
-	}
-
 	return stream.Add(fields, id)
 }
 
