@@ -31,6 +31,8 @@ func main() {
 	}
 }
 
+var store = make(map[string]string)
+
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
@@ -51,6 +53,22 @@ func handleConnection(conn net.Conn) {
 			parts = nil
 		} else if len(parts) == 3 && strings.ToUpper(parts[2]) == "PING" {
 			conn.Write([]byte("+PONG\r\n"))
+			parts = nil
+		} else if len(parts) == 5 && strings.ToUpper(parts[2]) == "SET" {
+			key := parts[3]
+			value := parts[4]
+			store[key] = value
+			conn.Write([]byte("+OK\r\n"))
+			parts = nil
+		} else if len(parts) == 4 && strings.ToUpper(parts[2]) == "GET" {
+			key := parts[3]
+			value, ok := store[key]
+			if ok {
+				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+				conn.Write([]byte(resp))
+			} else {
+				conn.Write([]byte("$-1\r\n")) // RESP nil
+			}
 			parts = nil
 		}
 	}
