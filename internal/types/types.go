@@ -21,4 +21,7 @@ const (
 	// TypeStream represents a Redis stream, an append-only log-like data structure.
 	// Streams store entries as timestamp-value pairs with unique IDs.
 	TypeStream
+
+	// TypeZSet represents a Redis sorted set
+	TypeZSet
 )

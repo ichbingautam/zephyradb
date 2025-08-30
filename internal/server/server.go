@@ -1418,11 +1418,32 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				typeStr = "list"
 			case *storage.Stream:
 				typeStr = "stream"
+			case *storage.ZSet:
+				typeStr = "zset"
 			default:
 				typeStr = "none"
 			}
 			resp := fmt.Sprintf("+%s\r\n", typeStr)
 			conn.Write([]byte(resp))
+		}
+
+	case "ZADD":
+		// Minimal ZADD: ZADD key score member
+		if len(parts) == 4 {
+			key := parts[1]
+			scoreStr := parts[2]
+			member := parts[3]
+			sc, err := strconv.ParseFloat(scoreStr, 64)
+			if err != nil {
+				conn.Write([]byte("-ERR value is not a valid float\r\n"))
+				return
+			}
+			added := s.store.ZAdd(key, sc, member)
+			conn.Write([]byte(fmt.Sprintf(":%d\r\n", added)))
+			// Propagate write to replica
+			s.propagate(parts)
+		} else {
+			conn.Write([]byte("-ERR wrong number of arguments for 'ZADD' command\r\n"))
 		}
 
 	case "INFO":

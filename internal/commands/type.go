@@ -37,6 +37,8 @@ func (c *TypeCommand) Execute(ctx context.Context, store *storage.Store) resp.Va
 		return resp.SimpleString("list")
 	case types.TypeStream:
 		return resp.SimpleString("stream")
+	case types.TypeZSet:
+		return resp.SimpleString("zset")
 	default:
 		return resp.SimpleString("none")
 	}
