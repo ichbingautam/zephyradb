@@ -991,8 +991,12 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			connected := len(s.replicaConns)
 			s.repMu.Unlock()
 			if numReplicas == 0 || connected >= numReplicas || time.Now().After(deadline) {
-				// Return current number of connected replicas (not capped by requested), per stage tests
-				resp := fmt.Sprintf(":%d\r\n", connected)
+				// Return min(connected, requested)
+				count := connected
+				if numReplicas > 0 && count > numReplicas {
+					count = numReplicas
+				}
+				resp := fmt.Sprintf(":%d\r\n", count)
 				conn.Write([]byte(resp))
 				return
 			}
