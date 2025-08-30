@@ -5,11 +5,13 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/internal/types"
 
@@ -35,6 +37,22 @@ type connState struct {
 	// queue holds RESP command parts queued during a MULTI transaction
 	queue [][]string
 }
+
+// respCaptureConn is a minimal net.Conn that captures writes into a buffer.
+// It implements the net.Conn interface to be used in place of a real connection
+// when we want to capture RESP output produced by command handlers.
+type respCaptureConn struct {
+	buf bytes.Buffer
+}
+
+func (c *respCaptureConn) Read(b []byte) (n int, err error)  { return 0, fmt.Errorf("not supported") }
+func (c *respCaptureConn) Write(b []byte) (n int, err error) { return c.buf.Write(b) }
+func (c *respCaptureConn) Close() error                      { return nil }
+func (c *respCaptureConn) LocalAddr() net.Addr               { return &net.IPAddr{} }
+func (c *respCaptureConn) RemoteAddr() net.Addr              { return &net.IPAddr{} }
+func (c *respCaptureConn) SetDeadline(t time.Time) error     { return nil }
+func (c *respCaptureConn) SetReadDeadline(t time.Time) error { return nil }
+func (c *respCaptureConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // New creates and initializes a new Server instance with a fresh storage backend.
 // The server supports the full range of Redis commands and maintains data
@@ -169,11 +187,21 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
 			return
 		}
-		// For this stage, do not execute queued commands yet. Clear state and
-		// return an empty array to indicate an empty transaction.
+		// Execute queued commands in order and collect their RESP replies
+		queued := state.queue
+		// Exit MULTI mode before executing, so commands run normally
 		state.inMulti = false
 		state.queue = nil
-		conn.Write([]byte("*0\r\n"))
+
+		// Build RESP array header with number of results
+		resp := fmt.Sprintf("*%d\r\n", len(queued))
+		for _, q := range queued {
+			capConn := &respCaptureConn{}
+			// Reuse same state; we're out of MULTI so commands will execute
+			s.handleCommand(capConn, q, state)
+			resp += capConn.buf.String()
+		}
+		conn.Write([]byte(resp))
 
 	case "SET":
 		if len(parts) >= 7 {
