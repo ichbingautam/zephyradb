@@ -47,6 +47,10 @@ type Server struct {
 	replicaConns []net.Conn
 	// repMu guards access to replicaConns and writes to them
 	repMu sync.Mutex
+	// WAIT/GETACK tracking
+	ackWaitActive bool
+	ackCount      int
+	ackSeen       map[string]bool
 	// replicaProcessedOffset tracks bytes of commands processed by this replica over the replication connection
 	replicaProcessedOffset int64
 	// RDB-related configuration
@@ -635,7 +639,22 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 					}
 				}
 			case "ack":
-				// Do not reply to REPLCONF ACK from replicas
+				// Count ACKs received during an active WAIT GETACK window and do not reply
+				s.repMu.Lock()
+				if s.ackWaitActive {
+					if s.ackSeen == nil {
+						s.ackSeen = make(map[string]bool)
+					}
+					addr := ""
+					if conn != nil && conn.RemoteAddr() != nil {
+						addr = conn.RemoteAddr().String()
+					}
+					if !s.ackSeen[addr] {
+						s.ackSeen[addr] = true
+						s.ackCount++
+					}
+				}
+				s.repMu.Unlock()
 				respondOK = false
 			default:
 				// Other subcommands like capa: reply OK
@@ -981,24 +1000,33 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			}
 		}
 
-		// Proactively request ACKs from replicas to advance their processed offsets
+		// Proactively request ACKs from replicas and start an ACK window
 		getack := "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
 		s.repMu.Lock()
-		for _, rc := range s.replicaConns {
+		s.ackWaitActive = true
+		s.ackCount = 0
+		s.ackSeen = make(map[string]bool)
+		conns := append([]net.Conn(nil), s.replicaConns...)
+		s.repMu.Unlock()
+		for _, rc := range conns {
 			if rc != nil {
 				_, _ = rc.Write([]byte(getack))
 			}
 		}
-		s.repMu.Unlock()
 
 		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 		for {
 			s.repMu.Lock()
-			connected := len(s.replicaConns)
+			acks := s.ackCount
 			s.repMu.Unlock()
-			if numReplicas == 0 || connected >= numReplicas || time.Now().After(deadline) {
-				// Return min(connected, requested)
-				count := connected
+			if numReplicas == 0 || acks >= numReplicas || time.Now().After(deadline) {
+				// End ACK window
+				s.repMu.Lock()
+				s.ackWaitActive = false
+				finalAcks := s.ackCount
+				s.repMu.Unlock()
+				// Return min(acks, requested)
+				count := finalAcks
 				if numReplicas > 0 && count > numReplicas {
 					count = numReplicas
 				}
