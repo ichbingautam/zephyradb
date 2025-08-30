@@ -32,6 +32,24 @@ func (s *Store) ZScore(key, member string) (float64, bool) {
     return sc, true
 }
 
+// ZRem removes a member from the sorted set at key. Returns 1 if the member
+// existed and was removed, or 0 if the key/member was missing.
+func (s *Store) ZRem(key, member string) int64 {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    entry, exists := s.data[key]
+    if !exists || entry.Type != types.TypeZSet {
+        return 0
+    }
+    zs, _ := entry.Value.(*ZSet)
+    if _, ok := zs.scores[member]; ok {
+        delete(zs.scores, member)
+        return 1
+    }
+    return 0
+}
+
 // ZCard returns the cardinality of the sorted set stored at key.
 // Returns 0 if the key doesn't exist or doesn't hold a zset.
 func (s *Store) ZCard(key string) int64 {

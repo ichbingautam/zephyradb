@@ -1503,6 +1503,19 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             conn.Write([]byte("-ERR wrong number of arguments for 'ZSCORE' command\r\n"))
         }
 
+    case "ZREM":
+        // ZREM key member -> integer removed count
+        if len(parts) == 3 {
+            key := parts[1]
+            member := parts[2]
+            removed := s.store.ZRem(key, member)
+            conn.Write([]byte(fmt.Sprintf(":%d\r\n", removed)))
+            // Propagate write to replicas
+            s.propagate(parts)
+        } else {
+            conn.Write([]byte("-ERR wrong number of arguments for 'ZREM' command\r\n"))
+        }
+
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section
 		if len(parts) >= 2 && strings.ToLower(parts[1]) == "replication" {
