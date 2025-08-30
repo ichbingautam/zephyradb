@@ -1466,73 +1466,49 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 	case "XREAD":
 		// Support: XREAD [BLOCK ms] STREAMS key1 ... keyN id1 ... idN
-		if len(parts) < 9 {
-			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
-			return
-		}
-
-		argIdx := 4
+		// Parse value-only parts (RESP parsing already stripped lengths/types)
+		i := 1 // start after command name
 		block := false
 		var timeoutMs int64 = 0
-		// Optional BLOCK
-		if strings.ToUpper(parts[argIdx]) == "BLOCK" {
-			if len(parts) < argIdx+4 { // need BLOCK ms STREAMS at least
-				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
-				return
-			}
-			ms, err := strconv.ParseInt(parts[argIdx+2], 10, 64)
+		// Optional BLOCK ms
+		if i+1 < len(parts) && strings.ToUpper(parts[i]) == "BLOCK" {
+			ms, err := strconv.ParseInt(parts[i+1], 10, 64)
 			if err != nil || ms < 0 {
 				conn.Write([]byte("-ERR invalid block timeout\r\n"))
 				return
 			}
 			block = true
 			timeoutMs = ms
-			argIdx += 4 // skip BLOCK, $len, ms, and next $len will be STREAMS
+			i += 2
 		}
 
-		if strings.ToUpper(parts[argIdx]) != "STREAMS" {
-			conn.Write([]byte("-ERR syntax error\r\n"))
+		// Expect STREAMS keyword
+		if i >= len(parts) || strings.ToUpper(parts[i]) != "STREAMS" {
+			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
 			return
 		}
+		i++
 
-		// After STREAMS, remaining values are keys then ids
-		remaining := (len(parts) - (argIdx + 1)) / 2
+		// Remaining are N keys followed by N IDs
+		remaining := len(parts) - i
 		if remaining <= 0 || remaining%2 != 0 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
 			return
 		}
 		n := remaining / 2
-		keys := make([]string, 0, n)
-		ids := make([]string, 0, n)
-		// keys
-		for i := 0; i < n; i++ {
-			idx := argIdx + 2 + i*2
-			if idx >= len(parts) {
-				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
-				return
-			}
-			keys = append(keys, parts[idx])
-		}
-		// ids
-		for j := 0; j < n; j++ {
-			idx := argIdx + 2 + n*2 + j*2
-			if idx >= len(parts) {
-				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
-				return
-			}
-			ids = append(ids, parts[idx])
-		}
+		keys := append([]string(nil), parts[i:i+n]...)
+		ids := append([]string(nil), parts[i+n:i+2*n]...)
 
 		// Support `$` as ID: translate to the current last ID of each stream so we only return new entries
-		for i := range ids {
-			if ids[i] == "$" {
-				entries, _ := s.store.XRANGE(keys[i], "-", "+")
+		for idx := range ids {
+			if ids[idx] == "$" {
+				entries, _ := s.store.XRANGE(keys[idx], "-", "+")
 				if len(entries) > 0 {
 					last := entries[len(entries)-1].ID.String()
-					ids[i] = last
+					ids[idx] = last
 				} else {
 					// Empty stream, use 0-0 so XREAD exclusive start returns nothing until something is added
-					ids[i] = "0-0"
+					ids[idx] = "0-0"
 				}
 			}
 		}
