@@ -1401,16 +1401,16 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "GEOADD":
-		// Validate longitude/latitude and return count. No storage yet.
+		// Validate longitude/latitude and store locations in a sorted set with score=0.
 		// Syntax: GEOADD key lon lat member [lon lat member ...]
-		added := 0
+		triplets := 0
 		if len(parts) > 2 {
-			added = (len(parts) - 2) / 3
+			triplets = (len(parts) - 2) / 3
 		}
 		// Validate each pair; if any invalid, return error and do not propagate
 		lonMin, lonMax := -180.0, 180.0
 		latMin, latMax := -85.05112878, 85.05112878
-		for i := 0; i < added; i++ {
+		for i := 0; i < triplets; i++ {
 			lonStr := parts[2+i*3]
 			latStr := parts[3+i*3]
 			lon, errLon := strconv.ParseFloat(lonStr, 64)
@@ -1428,7 +1428,14 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				return
 			}
 		}
-		conn.Write([]byte(fmt.Sprintf(":%d\r\n", added)))
+		// All valid: store into zset with score=0 and count newly added members
+		key := parts[1]
+		var addedNew int64 = 0
+		for i := 0; i < triplets; i++ {
+			member := parts[4+i*3]
+			addedNew += s.store.ZAdd(key, 0, member)
+		}
+		conn.Write([]byte(fmt.Sprintf(":%d\r\n", addedNew)))
 		// Propagate write to replica only on success
 		s.propagate(parts)
 
