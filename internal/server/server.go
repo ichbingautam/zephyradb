@@ -131,6 +131,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			conn.Write([]byte(resp))
 		}
 
+	case "MULTI":
+		// Start a transaction: for this stage, just acknowledge with OK
+		conn.Write([]byte("+OK\r\n"))
+
 	case "SET":
 		if len(parts) >= 7 {
 			key := parts[4]
