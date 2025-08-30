@@ -99,28 +99,34 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 }
 
 // Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
-// interleaveBits returns (x<<1)|y, so even positions hold y and odd positions hold x.
+// Some encoders store x in even positions and y in odd positions; decode accordingly.
 func deinterleaveBits(z uint64) (uint64, uint64) {
     var x uint64 = 0
     var y uint64 = 0
     for i := uint(0); i < geoStep; i++ {
-        // interleaveBits returns (x<<1) | y, so:
-        //  - even bit positions (0,2,4,...) hold y's bits
-        //  - odd bit positions  (1,3,5,...) hold x's bits
-        // Therefore, extract y from even positions and x from odd positions.
-        y |= ((z >> (2 * i)) & 1) << i       // y bit i from even position 2*i
-        x |= ((z >> (2*i + 1)) & 1) << i     // x bit i from odd position 2*i+1
+        // Even bit positions (0,2,4,...) -> x
+        x |= ((z >> (2 * i)) & 1) << i
+        // Odd bit positions (1,3,5,...) -> y
+        y |= ((z >> (2*i + 1)) & 1) << i
     }
     return x, y
 }
 
-// Convert quantized bits back to coordinate using precise linear mapping to the cell center
+// Convert quantized bits back to coordinate using the same bisection the encoder used
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-    // Center of the quantization cell: min + (bits + 0.5) / 2^step * (max - min)
-    // Use math.Ldexp to compute 2^step precisely in float64
-    size := math.Ldexp(1.0, int(step))
-    frac := (float64(bits) + 0.5) / size
-    return min + frac*(max-min)
+    // Walk from MSB to LSB; for each bit, split interval and keep the half matching the bit
+    for i := int(step) - 1; i >= 0; i-- {
+        mid := (min + max) / 2
+        if ((bits >> uint(i)) & 1) == 1 {
+            // Bit 1 -> upper half
+            min = mid
+        } else {
+            // Bit 0 -> lower half
+            max = mid
+        }
+    }
+    // Return midpoint of final interval
+    return (min + max) / 2
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
