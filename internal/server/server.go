@@ -1490,6 +1490,31 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Propagate write to replica only on success
 		s.propagate(parts)
 
+	case "GEOPOS":
+		// GEOPOS key member [member ...]
+		if len(parts) < 3 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'geopos' command\r\n"))
+			return
+		}
+		key := parts[1]
+		members := parts[2:]
+		// Top-level array: one entry per requested member
+		resp := fmt.Sprintf("*%d\r\n", len(members))
+		for _, m := range members {
+			// Check existence in zset
+			if _, ok := s.store.ZScore(key, m); !ok {
+				resp += "*-1\r\n"
+				continue
+			}
+			// Placeholder lon/lat for now (decoding will be implemented later)
+			lon := "0"
+			lat := "0"
+			resp += "*2\r\n"
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(lon), lon)
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(lat), lat)
+		}
+		conn.Write([]byte(resp))
+
 	case "TYPE":
 		if len(parts) == 2 {
 			key := parts[1]
