@@ -704,28 +704,33 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "WAIT":
 		// Minimal WAIT implementation for tests: if no replicas are connected, return 0 immediately.
 		// Syntax: WAIT numreplicas timeout
-		// The tester calls: WAIT 0 60000 -> respond immediately with 0.
+		// For this stage, we'll wait up to the provided timeout for replicas to connect,
+		// and then return the current connected replica count as a RESP integer.
 		var numReplicas int
+		var timeoutMs int
 		if len(parts) >= 7 {
 			// parts[4] is numreplicas, parts[6] is timeout
 			if v, err := strconv.Atoi(parts[4]); err == nil {
 				numReplicas = v
 			}
+			if t, err := strconv.Atoi(parts[6]); err == nil {
+				timeoutMs = t
+			}
 		}
-		if numReplicas == 0 {
-			conn.Write([]byte(":0\r\n"))
-			return
+
+		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+		for {
+			s.repMu.Lock()
+			connected := len(s.replicaConns)
+			s.repMu.Unlock()
+			if numReplicas == 0 || connected >= numReplicas || time.Now().After(deadline) {
+				// Return current number of connected replicas (not capped by requested), per stage tests
+				resp := fmt.Sprintf(":%d\r\n", connected)
+				conn.Write([]byte(resp))
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		s.repMu.Lock()
-		connected := len(s.replicaConns)
-		s.repMu.Unlock()
-		if connected == 0 {
-			conn.Write([]byte(":0\r\n"))
-			return
-		}
-		// For now, return the current number of connected replicas (best-effort)
-		resp := fmt.Sprintf(":%d\r\n", connected)
-		conn.Write([]byte(resp))
 
 	case "XADD":
 		if len(parts) < 9 || len(parts)%2 != 1 {
