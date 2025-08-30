@@ -35,19 +35,22 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 	keys := make([]string, 0, len(cmd.streams))
 	ids := make([]string, 0, len(cmd.streams))
 	useLatestID := make(map[string]bool, len(cmd.streams))
+	// baselineID stores the per-key baseline ID when "$" was requested
+	baselineID := make(map[string]string, len(cmd.streams))
 
 	// Convert the map to slices for the storage layer
 	for key, id := range cmd.streams {
 		keys = append(keys, key)
 		if id == "$" {
-			// For $, we'll first get the last ID and then use it
+			// For $, we'll first get the last ID and then use it as the baseline
 			entries, _ := store.XRANGE(key, "-", "+")
+			last := "0-0"
 			if len(entries) > 0 {
-				ids = append(ids, getLastEntryID(entries))
-			} else {
-				ids = append(ids, "0-0")
+				last = getLastEntryID(entries)
 			}
+			ids = append(ids, last)
 			useLatestID[key] = true
+			baselineID[key] = last
 		} else {
 			ids = append(ids, id)
 			useLatestID[key] = false
@@ -81,9 +84,10 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 			for key, entries := range allEntries {
 				if shouldUseLatest, ok := useLatestID[key]; ok && shouldUseLatest && len(entries) > 0 {
 					// For $, only return entries that are newer than what we initially found
+					base := baselineID[key]
 					filtered := make([]storage.StreamEntry, 0, len(entries))
 					for _, entry := range entries {
-						if entry.ID.String() > ids[0] { // We know the ID is in ids[0] because we put it there
+						if entry.ID.String() > base {
 							filtered = append(filtered, entry)
 						}
 					}
@@ -116,12 +120,12 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 	// If we used $, filter out any entries that existed when we started
 	if len(allEntries) > 0 {
 		filteredEntries := make(map[string][]storage.StreamEntry)
-		for i, key := range keys {
+		for _, key := range keys {
 			if entries, exists := allEntries[key]; exists && useLatestID[key] && len(entries) > 0 {
-				// For $, only return entries that are newer than what we initially found
+				base := baselineID[key]
 				filtered := make([]storage.StreamEntry, 0, len(entries))
 				for _, entry := range entries {
-					if entry.ID.String() > ids[i] {
+					if entry.ID.String() > base {
 						filtered = append(filtered, entry)
 					}
 				}
@@ -234,12 +238,6 @@ func (f *XReadCommandFactory) CreateCommand(args []string) (Command, error) {
 	for i := 0; i < numStreams; i++ {
 		key := args[i]
 		id := args[numStreams+i]
-
-		// Special case: $ means only new entries
-		if id == "$" {
-			id = "0-0" // Will be replaced with last ID in Execute
-		}
-
 		streams[key] = id
 	}
 
