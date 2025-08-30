@@ -1110,8 +1110,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(k), k))
 			}
 			conn.Write(buf.Bytes())
+		} else {
+			// Return empty array for unsupported patterns or missing pattern
+			conn.Write([]byte("*0\r\n"))
 		}
-		conn.Write([]byte("*0\r\n"))
 
 	case "WAIT":
 		// WAIT implementation: send REPLCONF GETACK * to replicas and wait for acknowledgments
