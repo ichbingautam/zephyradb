@@ -1085,19 +1085,21 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				v := s.configDir
 				resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v)
 				conn.Write([]byte(resp))
+				return
 			case "dbfilename":
 				k := "dbfilename"
 				v := s.configDBFilename
 				resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v)
 				conn.Write([]byte(resp))
+				return
 			default:
 				// Unknown key -> empty array
 				conn.Write([]byte("*0\r\n"))
 				return
 			}
 		}
-		// Unsupported CONFIG subcommand for now
-		conn.Write([]byte("-ERR Unsupported CONFIG subcommand\r\n"))
+		// Unsupported CONFIG subcommand
+		conn.Write([]byte("-ERR Unsupported CONFIG subcommand or wrong number of arguments\r\n"))
 
 	case "KEYS":
 		// Only support pattern "*"
