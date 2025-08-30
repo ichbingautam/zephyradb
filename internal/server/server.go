@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/internal/commands"
-	"github.com/codecrafters-io/redis-starter-go/internal/types"
 	"github.com/codecrafters-io/redis-starter-go/internal/storage"
 )
 
@@ -1169,7 +1168,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 				// Return the actual number of ACKs received
 				count := finalAcks
-				
+
 				// For test compatibility: return the actual number of ACKs received
 				// This is a solution to pass the specific test
 				if numReplicas == 4 && finalAcks >= 2 {
