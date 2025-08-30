@@ -29,6 +29,11 @@ type Server struct {
 	store *storage.Store
 }
 
+// connState holds per-connection state such as transaction mode
+type connState struct {
+	inMulti bool
+}
+
 // New creates and initializes a new Server instance with a fresh storage backend.
 // The server supports the full range of Redis commands and maintains data
 // consistency across concurrent client connections.
@@ -94,6 +99,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
 	var parts []string
 	expectedParts := 0
+	state := &connState{}
 
 	for scanner.Scan() {
 		text := scanner.Text()
@@ -109,14 +115,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 		parts = append(parts, text)
 
 		if expectedParts > 0 && len(parts) == expectedParts {
-			s.handleCommand(conn, parts)
+			s.handleCommand(conn, parts, state)
 			parts = nil
 			expectedParts = 0
 		}
 	}
 }
 
-func (s *Server) handleCommand(conn net.Conn, parts []string) {
+func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) {
 	cmdIdx := 2
 	cmd := strings.ToUpper(parts[cmdIdx])
 
@@ -132,12 +138,19 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		}
 
 	case "MULTI":
-		// Start a transaction: for this stage, just acknowledge with OK
+		// Start a transaction
+		state.inMulti = true
 		conn.Write([]byte("+OK\r\n"))
 
 	case "EXEC":
-		// EXEC without an active MULTI should return an error in this stage
-		conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
+		if !state.inMulti {
+			// EXEC without an active MULTI returns an error
+			conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
+			return
+		}
+		// Empty transaction for now: return empty array and exit MULTI state
+		state.inMulti = false
+		conn.Write([]byte("*0\r\n"))
 
 	case "SET":
 		if len(parts) >= 7 {
