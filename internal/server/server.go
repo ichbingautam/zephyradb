@@ -1445,18 +1445,38 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			conn.Write([]byte("-ERR wrong number of arguments for 'ZADD' command\r\n"))
 		}
 
-	case "ZRANK":
-		if len(parts) == 3 {
-			key := parts[1]
-			member := parts[2]
-			if rank, ok := s.store.ZRank(key, member); ok {
-				conn.Write([]byte(fmt.Sprintf(":%d\r\n", rank)))
-			} else {
-				conn.Write([]byte("$-1\r\n"))
-			}
-		} else {
-			conn.Write([]byte("-ERR wrong number of arguments for 'ZRANK' command\r\n"))
-		}
+	    case "ZRANK":
+        if len(parts) == 3 {
+            key := parts[1]
+            member := parts[2]
+            if rank, ok := s.store.ZRank(key, member); ok {
+                conn.Write([]byte(fmt.Sprintf(":%d\r\n", rank)))
+            } else {
+                conn.Write([]byte("$-1\r\n"))
+            }
+        } else {
+            conn.Write([]byte("-ERR wrong number of arguments for 'ZRANK' command\r\n"))
+        }
+
+    case "ZRANGE":
+        // ZRANGE key start stop -> array of members
+        if len(parts) == 4 {
+            key := parts[1]
+            start, err1 := strconv.ParseInt(parts[2], 10, 64)
+            stop, err2 := strconv.ParseInt(parts[3], 10, 64)
+            if err1 != nil || err2 != nil {
+                conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+                return
+            }
+            members := s.store.ZRange(key, start, stop)
+            // Write RESP array
+            conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(members))))
+            for _, m := range members {
+                conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(m), m)))
+            }
+        } else {
+            conn.Write([]byte("-ERR wrong number of arguments for 'ZRANGE' command\r\n"))
+        }
 
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section

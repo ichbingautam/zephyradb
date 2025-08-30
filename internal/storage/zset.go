@@ -1,6 +1,7 @@
 package storage
 
 import (
+    "sort"
     "github.com/codecrafters-io/redis-starter-go/internal/types"
 )
 
@@ -11,6 +12,58 @@ import (
 type ZSet struct {
     // scores maps member -> score
     scores map[string]float64
+}
+
+// ZRange returns members in the sorted set stored at key between indexes
+// start and stop (inclusive), ordered by increasing score and lexicographically
+// for ties. If key doesn't exist or is not a zset, returns empty slice.
+func (s *Store) ZRange(key string, start, stop int64) []string {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+
+    entry, exists := s.data[key]
+    if !exists || entry.Type != types.TypeZSet {
+        return []string{}
+    }
+    zs, _ := entry.Value.(*ZSet)
+    n := len(zs.scores)
+    if n == 0 {
+        return []string{}
+    }
+    // Materialize and sort
+    items := make([]struct{ m string; s float64 }, 0, n)
+    for m, sc := range zs.scores {
+        items = append(items, struct{ m string; s float64 }{m: m, s: sc})
+    }
+    sort.Slice(items, func(i, j int) bool {
+        if items[i].s == items[j].s {
+            return items[i].m < items[j].m
+        }
+        return items[i].s < items[j].s
+    })
+
+    // Bounds and slicing
+    if start < 0 {
+        start = 0
+    }
+    if stop < 0 {
+        return []string{}
+    }
+    if start >= int64(n) {
+        return []string{}
+    }
+    if stop >= int64(n) {
+        stop = int64(n) - 1
+    }
+    if start > stop {
+        return []string{}
+    }
+
+    res := make([]string, 0, stop-start+1)
+    for i := start; i <= stop; i++ {
+        res = append(res, items[i].m)
+    }
+    return res
 }
 
 // ensureZSetLocked ensures that the key exists and holds a ZSet under s.mu.
