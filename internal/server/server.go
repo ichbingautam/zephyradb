@@ -171,18 +171,17 @@ func (s *Server) loadRDBFromDisk() {
 			return
 		}
 		i += n
-		// set into store, honoring expiry if in future
-		var ttlMs int64
+		// Check if key is expired before storing
 		now := time.Now().UnixMilli()
-		if expiresAtMs > 0 {
-			if expiresAtMs > now {
+		if expiresAtMs > 0 && expiresAtMs <= now {
+			// Skip expired keys
+		} else {
+			var ttlMs int64 = 0
+			if expiresAtMs > 0 {
 				ttlMs = expiresAtMs - now
-			} else {
-				// For expired keys, we still load them but with a TTL of 0
-				ttlMs = 0
 			}
+			s.store.Set(key, val, ttlMs)
 		}
-		s.store.Set(key, val, ttlMs)
 		// Reset expiresAtMs for next key
 		expiresAtMs = 0
 	}
