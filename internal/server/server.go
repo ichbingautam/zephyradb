@@ -99,15 +99,17 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 }
 
 // Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
-// Treat even bit positions as x (lon) and odd positions as y (lat).
+// interleaveBits returns (x<<1)|y, so even positions hold y and odd positions hold x.
 func deinterleaveBits(z uint64) (uint64, uint64) {
     var x uint64 = 0
     var y uint64 = 0
     for i := uint(0); i < geoStep; i++ {
-        // x bit i from even position 2*i
-        x |= ((z >> (2 * i)) & 1) << i
-        // y bit i from odd position 2*i+1
-        y |= ((z >> (2*i + 1)) & 1) << i
+        // interleaveBits returns (x<<1) | y, so:
+        //  - even bit positions (0,2,4,...) hold y's bits
+        //  - odd bit positions  (1,3,5,...) hold x's bits
+        // Therefore, extract y from even positions and x from odd positions.
+        y |= ((z >> (2 * i)) & 1) << i       // y bit i from even position 2*i
+        x |= ((z >> (2*i + 1)) & 1) << i     // x bit i from odd position 2*i+1
     }
     return x, y
 }
@@ -1675,9 +1677,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				resp += "$-1\r\n"
 				continue
 			}
-			// Decode lon/lat from score (scores are within float64's exact integer range)
-			z := uint64(score)
-			lonBits, latBits := deinterleaveBits(z)
+			// Decode lon/lat from score (round first to avoid fp precision loss)
+			z := uint64(math.Round(score))
+			lonBits, latBits := deinterleaveBits(z) // x from odd, y from even
 			lonVal := bitsToCoord(lonBits, geoLonMin, geoLonMax, geoStep)
 			latVal := bitsToCoord(latBits, geoLatMin, geoLatMax, geoStep)
 			lon := strconv.FormatFloat(lonVal, 'f', 17, 64)
