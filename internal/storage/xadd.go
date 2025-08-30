@@ -128,7 +128,7 @@ func (s *Store) readStream(key string, id string) ([]StreamEntry, error) {
 
 	entry := s.data[key]
 	if entry.Type == types.TypeNil {
-		return nil, nil
+		return []StreamEntry{}, nil
 	}
 
 	if entry.Type != types.TypeStream {
