@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -649,11 +648,18 @@ func coordToBits(val, min, max float64, step uint) uint64 {
     if val > max {
         val = max
     }
-    // normalize to [0,1]
-    scale := (val - min) / (max - min)
-    maxBits := (1 << step) - 1
-    // use floor to match Redis geohash quantization
-    return uint64(math.Floor(scale * float64(maxBits)))
+    var bits uint64 = 0
+    for i := uint(0); i < step; i++ {
+        mid := (min + max) / 2
+        bits <<= 1
+        if val >= mid {
+            bits |= 1
+            min = mid
+        } else {
+            max = mid
+        }
+    }
+    return bits
 }
 
 func interleaveBits(x, y uint64) uint64 {
