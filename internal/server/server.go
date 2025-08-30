@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -61,6 +62,23 @@ type Server struct {
 	channelSubs map[string]int
 	// Pub/Sub: mapping of channel -> set of subscribed connections
 	subConns map[string]map[net.Conn]bool
+}
+
+// Haversine distance between two points (degrees) on a sphere of radius R meters
+func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
+    // convert to radians
+    toRad := func(d float64) float64 { return d * math.Pi / 180.0 }
+    φ1 := toRad(lat1)
+    λ1 := toRad(lon1)
+    φ2 := toRad(lat2)
+    λ2 := toRad(lon2)
+    dφ := φ2 - φ1
+    dλ := λ2 - λ1
+    sinDφ2 := math.Sin(dφ / 2)
+    sinDλ2 := math.Sin(dλ / 2)
+    a := sinDφ2*sinDφ2 + math.Cos(φ1)*math.Cos(φ2)*sinDλ2*sinDλ2
+    c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+    return R * c
 }
 
 // Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
@@ -1291,6 +1309,36 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			s.handleCommand(capConn, q, state)
 			resp += capConn.buf.String()
 		}
+		conn.Write([]byte(resp))
+
+	case "GEODIST":
+		// GEODIST key member1 member2
+		if len(parts) != 4 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'geodist' command\r\n"))
+			return
+		}
+		key := parts[1]
+		m1 := parts[2]
+		m2 := parts[3]
+		s1, ok1 := s.store.ZScore(key, m1)
+		s2, ok2 := s.store.ZScore(key, m2)
+		if !ok1 || !ok2 {
+			conn.Write([]byte("$-1\r\n"))
+			return
+		}
+		// Decode coords
+		lon1b, lat1b := deinterleaveBits(uint64(s1))
+		lon2b, lat2b := deinterleaveBits(uint64(s2))
+		lon1 := bitsToCoord(lon1b, geoLonMin, geoLonMax, geoStep)
+		lat1 := bitsToCoord(lat1b, geoLatMin, geoLatMax, geoStep)
+		lon2 := bitsToCoord(lon2b, geoLonMin, geoLonMax, geoStep)
+		lat2 := bitsToCoord(lat2b, geoLatMin, geoLatMax, geoStep)
+
+		// Haversine distance in meters (Redis uses GEO_EARTH_RADIUS_IN_METERS = 6372797.560856)
+		const earthRadius = 6372797.560856
+		dist := haversine(lat1, lon1, lat2, lon2, earthRadius)
+		val := fmt.Sprintf("%.4f", dist)
+		resp := fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
 		conn.Write([]byte(resp))
 
 	case "SET":
