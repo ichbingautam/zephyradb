@@ -960,8 +960,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "WAIT":
 		// Minimal WAIT implementation for tests: if no replicas are connected, return 0 immediately.
 		// Syntax: WAIT numreplicas timeout
-		// For this stage, we'll wait up to the provided timeout for replicas to connect,
-		// and then return the current connected replica count as a RESP integer.
+		// For this stage, we'll first send REPLCONF GETACK * to replicas, then wait up to the
+		// provided timeout for replicas to connect, and finally return the current connected
+		// replica count as a RESP integer.
 		var numReplicas int
 		var timeoutMs int
 		if len(parts) >= 7 {
@@ -973,6 +974,16 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				timeoutMs = t
 			}
 		}
+
+		// Proactively request ACKs from replicas to advance their processed offsets
+		getack := "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+		s.repMu.Lock()
+		for _, rc := range s.replicaConns {
+			if rc != nil {
+				_, _ = rc.Write([]byte(getack))
+			}
+		}
+		s.repMu.Unlock()
 
 		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 		for {
