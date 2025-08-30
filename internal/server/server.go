@@ -120,11 +120,11 @@ func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
     for i := int(step) - 1; i >= 0; i-- {
         mid := (min + max) / 2
         if ((bits >> uint(i)) & 1) == 1 {
-            // Choose upper half by tightening the upper bound
-            max = mid
-        } else {
-            // Choose lower half by raising the lower bound
+            // Bit 1 -> choose upper half (raise lower bound)
             min = mid
+        } else {
+            // Bit 0 -> choose lower half (lower upper bound)
+            max = mid
         }
     }
     // Return the midpoint of the final interval (geohash cell center)
@@ -720,7 +720,7 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	for i := uint(0); i < step; i++ {
 		mid := (min + max) / 2
 		bits <<= 1
-		if val > mid { // strict comparison
+		if val >= mid { // non-strict to reduce bias
 			bits |= 1
 			min = mid
 		} else {
