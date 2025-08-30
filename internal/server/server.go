@@ -177,7 +177,8 @@ func (s *Server) startReplicaHandshake() {
     }
 
     // Now continuously read commands from master and apply them without replying
-    scanner2 := bufio.NewScanner(conn)
+    // Important: reuse the same buffered reader to avoid losing bytes already buffered.
+    scanner2 := bufio.NewScanner(r)
     var parts2 []string
     expected2 := 0
     silentConn := &discardConn{}
