@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -144,6 +145,55 @@ func (s *Server) startReplicaHandshake() {
     _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
     _, _ = r.ReadString('\n')
     _ = conn.SetReadDeadline(time.Time{})
+
+    // Read the RDB bulk header: $<len>\r\n
+    header, err := r.ReadString('\n')
+    if err != nil {
+        fmt.Printf("[replica] failed to read RDB header: %v\n", err)
+        _ = conn.Close()
+        return
+    }
+    if !strings.HasPrefix(header, "$") {
+        fmt.Printf("[replica] unexpected RDB header: %q\n", header)
+        _ = conn.Close()
+        return
+    }
+    rdbLen, err := strconv.Atoi(strings.TrimSpace(header[1:]))
+    if err != nil || rdbLen < 0 {
+        fmt.Printf("[replica] invalid RDB length: %v\n", err)
+        _ = conn.Close()
+        return
+    }
+    // Read exactly rdbLen bytes (no trailing CRLF per spec used here)
+    if rdbLen > 0 {
+        buf := make([]byte, rdbLen)
+        if _, err := io.ReadFull(r, buf); err != nil {
+            fmt.Printf("[replica] failed to read RDB bytes: %v\n", err)
+            _ = conn.Close()
+            return
+        }
+    }
+
+    // Now continuously read commands from master and apply them without replying
+    scanner2 := bufio.NewScanner(conn)
+    var parts2 []string
+    expected2 := 0
+    silentConn := &discardConn{}
+    state := &connState{}
+    for scanner2.Scan() {
+        line := scanner2.Text()
+        if len(parts2) == 0 && strings.HasPrefix(line, "*") {
+            if n, err := strconv.Atoi(line[1:]); err == nil {
+                expected2 = n*2 + 1
+            }
+        }
+        parts2 = append(parts2, line)
+        if expected2 > 0 && len(parts2) == expected2 {
+            s.handleCommand(silentConn, parts2, state)
+            parts2 = nil
+            expected2 = 0
+        }
+    }
 }
 
 // connState holds per-connection state such as transaction mode
@@ -168,6 +218,19 @@ func (c *respCaptureConn) RemoteAddr() net.Addr              { return &net.IPAdd
 func (c *respCaptureConn) SetDeadline(t time.Time) error     { return nil }
 func (c *respCaptureConn) SetReadDeadline(t time.Time) error { return nil }
 func (c *respCaptureConn) SetWriteDeadline(t time.Time) error { return nil }
+
+// discardConn is a net.Conn that discards all writes and doesn't support reads.
+// Used on the replica when executing commands received from master so no response is sent back.
+type discardConn struct{}
+
+func (d *discardConn) Read(b []byte) (n int, err error)  { return 0, fmt.Errorf("not supported") }
+func (d *discardConn) Write(b []byte) (n int, err error) { return len(b), nil }
+func (d *discardConn) Close() error                      { return nil }
+func (d *discardConn) LocalAddr() net.Addr               { return &net.IPAddr{} }
+func (d *discardConn) RemoteAddr() net.Addr              { return &net.IPAddr{} }
+func (d *discardConn) SetDeadline(t time.Time) error     { return nil }
+func (d *discardConn) SetReadDeadline(t time.Time) error { return nil }
+func (d *discardConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // New creates and initializes a new Server instance with a fresh storage backend.
 // The server supports the full range of Redis commands and maintains data
