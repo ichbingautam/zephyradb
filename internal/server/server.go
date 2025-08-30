@@ -882,6 +882,24 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
         }
     }
 
+    // If the client is in Subscribed mode, restrict allowed commands
+    if state.subscribedChannels != nil && len(state.subscribedChannels) > 0 {
+        allowed := map[string]bool{
+            "SUBSCRIBE":    true,
+            "PSUBSCRIBE":   true,
+            "UNSUBSCRIBE":  true,
+            "PUNSUBSCRIBE": true,
+            "PING":         true,
+            "QUIT":         true,
+            "RESET":        true,
+        }
+        if !allowed[cmd] {
+            errMsg := fmt.Sprintf("-ERR Can't execute '%s': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n", strings.ToLower(cmd))
+            conn.Write([]byte(errMsg))
+            return
+        }
+    }
+
     switch cmd {
     case "PING":
         // Basic health check
