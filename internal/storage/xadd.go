@@ -144,7 +144,8 @@ func (s *Store) readStream(key string, id string) ([]StreamEntry, error) {
 
 	// Special case: if ID is "0-0", return all entries
 	if id == "0-0" {
-		return stream.Range(StreamID{Time: 0, Sequence: 0}, StreamID{Time: -1, Sequence: 0}), nil
+		// XREAD is exclusive, so start strictly after 0-0 => 0-1
+		return stream.Range(StreamID{Time: 0, Sequence: 1}, StreamID{Time: 1<<63 - 1, Sequence: 1<<63 - 1}), nil
 	}
 
 	startID, err := ParseStreamID(id)
@@ -152,8 +153,8 @@ func (s *Store) readStream(key string, id string) ([]StreamEntry, error) {
 		return nil, fmt.Errorf("invalid ID: %v", err)
 	}
 
-	// Return entries with ID greater than startID
-	return stream.Range(StreamID{Time: startID.Time, Sequence: startID.Sequence + 1}, StreamID{Time: -1, Sequence: 0}), nil
+	// Return entries with ID greater than startID (exclusive)
+	return stream.Range(StreamID{Time: startID.Time, Sequence: startID.Sequence + 1}, StreamID{Time: 1<<63 - 1, Sequence: 1<<63 - 1}), nil
 }
 
 // XLEN returns the number of entries in a stream
