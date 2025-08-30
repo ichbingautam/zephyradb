@@ -741,6 +741,25 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		if len(parts) >= 3 {
 			sub := strings.ToLower(parts[1])
 			switch sub {
+			case "getack":
+				// Handle GETACK * by returning the current replication offset
+				if len(parts) >= 3 && parts[2] == "*" {
+					s.repMu.Lock()
+					offset := s.replOffset
+					s.repMu.Unlock()
+					// Return: *3
+					// $8
+					// REPLCONF
+					// $3
+					// ACK
+					// $<len(offset)>
+					// <offset>
+					offsetStr := strconv.FormatInt(offset, 10)
+					response := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offsetStr), offsetStr)
+					conn.Write([]byte(response))
+					return
+				}
+				respondOK = false
 			case "listening-port":
 				if len(parts) >= 3 {
 					if p, err := strconv.Atoi(parts[2]); err == nil {
