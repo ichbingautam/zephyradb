@@ -467,13 +467,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			}
 		}
 		if count == 0 {
-			// If blocking was requested and timed out: return null bulk string
-			if block {
-				conn.Write([]byte("$-1\r\n"))
-			} else {
-				// Non-blocking: null array when nothing to return
-				conn.Write([]byte("*-1\r\n"))
-			}
+			// Return null array when nothing to return (matches Codecrafters tests)
+			conn.Write([]byte("*-1\r\n"))
 			return
 		}
 
