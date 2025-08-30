@@ -63,6 +63,38 @@ type Server struct {
 	subConns map[string]map[net.Conn]bool
 }
 
+// Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
+func deinterleaveBits(z uint64) (uint64, uint64) {
+    x := compact1By1(z >> 1)
+    y := compact1By1(z)
+    return x, y
+}
+
+// Compact bits: reverse of spreading 0babcdef -> a b c d e f packed
+func compact1By1(v uint64) uint64 {
+    v &= 0x5555555555555555
+    v = (v | (v >> 1)) & 0x3333333333333333
+    v = (v | (v >> 2)) & 0x0F0F0F0F0F0F0F0F
+    v = (v | (v >> 4)) & 0x00FF00FF00FF00FF
+    v = (v | (v >> 8)) & 0x0000FFFF0000FFFF
+    v = (v | (v >> 16)) & 0x00000000FFFFFFFF
+    return v
+}
+
+// Convert quantized bits back to coordinate using the same bisection
+func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
+    for i := int(step - 1); i >= 0; i-- {
+        mid := (min + max) / 2
+        if (bits>>uint(i))&1 == 1 {
+            min = mid
+        } else {
+            max = mid
+        }
+    }
+    // Return midpoint of the resulting interval
+    return (min + max) / 2
+}
+
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
 func (s *Server) SetRDBConfig(dir, filename string) {
 	if dir != "" {
@@ -1508,13 +1540,18 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		resp := fmt.Sprintf("*%d\r\n", len(members))
 		for _, m := range members {
 			// Check existence in zset
-			if _, ok := s.store.ZScore(key, m); !ok {
+			score, ok := s.store.ZScore(key, m)
+			if !ok {
 				resp += "*-1\r\n"
 				continue
 			}
-			// Placeholder lon/lat for now (decoding will be implemented later)
-			lon := "0"
-			lat := "0"
+			// Decode lon/lat from score
+			z := uint64(score)
+			lonBits, latBits := deinterleaveBits(z)
+			lonVal := bitsToCoord(lonBits, geoLonMin, geoLonMax, geoStep)
+			latVal := bitsToCoord(latBits, geoLatMin, geoLatMax, geoStep)
+			lon := strconv.FormatFloat(lonVal, 'f', 17, 64)
+			lat := strconv.FormatFloat(latVal, 'f', 17, 64)
 			resp += "*2\r\n"
 			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(lon), lon)
 			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(lat), lat)
