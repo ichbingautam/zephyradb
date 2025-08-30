@@ -47,3 +47,30 @@ func (s *Store) ZAdd(key string, score float64, member string) int64 {
     }
     return 1
 }
+
+// ZRank returns the rank (0-based) of member in the sorted set stored at key.
+// Ordering is by increasing score; ties are broken lexicographically by member.
+// If the key or member doesn't exist, returns (0, false).
+func (s *Store) ZRank(key, member string) (int64, bool) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+
+    entry, exists := s.data[key]
+    if !exists || entry.Type != types.TypeZSet {
+        return 0, false
+    }
+    zs, _ := entry.Value.(*ZSet)
+    score, ok := zs.scores[member]
+    if !ok {
+        return 0, false
+    }
+    var rank int64
+    for m, sc := range zs.scores {
+        if sc < score {
+            rank++
+        } else if sc == score && m < member {
+            rank++
+        }
+    }
+    return rank, true
+}

@@ -429,7 +429,6 @@ func (s *Server) startReplicaHandshake() {
             }
             return line, nil
         }
-
         readBulkString := func() (string, error) {
             // Expect a line like $<len>\r\n
             hdr, err := readLine()
@@ -1444,6 +1443,19 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			s.propagate(parts)
 		} else {
 			conn.Write([]byte("-ERR wrong number of arguments for 'ZADD' command\r\n"))
+		}
+
+	case "ZRANK":
+		if len(parts) == 3 {
+			key := parts[1]
+			member := parts[2]
+			if rank, ok := s.store.ZRank(key, member); ok {
+				conn.Write([]byte(fmt.Sprintf(":%d\r\n", rank)))
+			} else {
+				conn.Write([]byte("$-1\r\n"))
+			}
+		} else {
+			conn.Write([]byte("-ERR wrong number of arguments for 'ZRANK' command\r\n"))
 		}
 
 	case "INFO":
