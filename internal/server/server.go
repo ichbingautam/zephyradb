@@ -99,15 +99,15 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 }
 
 // Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
-// Some encoders store x in even positions and y in odd positions; decode accordingly.
+// interleaveBits returns (x<<1) | y, so even positions hold y and odd positions hold x.
 func deinterleaveBits(z uint64) (uint64, uint64) {
     var x uint64 = 0
     var y uint64 = 0
     for i := uint(0); i < geoStep; i++ {
-        // Even bit positions (0,2,4,...) -> x
-        x |= ((z >> (2 * i)) & 1) << i
-        // Odd bit positions (1,3,5,...) -> y
-        y |= ((z >> (2*i + 1)) & 1) << i
+        // y bit i from even position 2*i
+        y |= ((z >> (2 * i)) & 1) << i
+        // x bit i from odd position 2*i+1
+        x |= ((z >> (2*i + 1)) & 1) << i
     }
     return x, y
 }
