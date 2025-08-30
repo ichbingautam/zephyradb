@@ -1023,13 +1023,16 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s.ackSeen = make(map[string]bool)
 		// Capture the current master replication offset as the target for this WAIT
 		s.waitTargetOffset = s.replOffset
-		// Write GETACK to all replicas while holding repMu to serialize with other writes
-		for _, rc := range s.replicaConns {
+		replicaConnsCopy := append([]net.Conn(nil), s.replicaConns...)
+		s.repMu.Unlock()
+
+		// Write GETACK to all replicas. This is done outside the main lock to allow
+		// network I/O to proceed without blocking other replication activity.
+		for _, rc := range replicaConnsCopy {
 			if rc != nil {
 				_, _ = rc.Write([]byte(getack))
 			}
 		}
-		s.repMu.Unlock()
 
 		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 		for {
