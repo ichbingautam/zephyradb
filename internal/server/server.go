@@ -522,7 +522,10 @@ func (s *Server) startReplicaHandshake() {
                 continue
             }
 
-            // Compute payload length (bytes read for this command) to advance processed offset
+            // Determine command name uppercased for control flow
+            cmd := strings.ToUpper(parts[0])
+
+            // Compute payload length (bytes read for this command)
             var pl bytes.Buffer
             pl.WriteString(fmt.Sprintf("*%d\r\n", len(parts)))
             for _, p := range parts {
@@ -530,14 +533,21 @@ func (s *Server) startReplicaHandshake() {
             }
             payloadLen := int64(pl.Len())
 
-            // Update processed offset
-            s.repMu.Lock()
-            s.replicaProcessedOffset += payloadLen
-            processed := s.replicaProcessedOffset
-            s.repMu.Unlock()
+            // Only advance processed offset for actual replicated commands (not REPLCONF)
+            var processed int64
+            if cmd != "REPLCONF" {
+                s.repMu.Lock()
+                s.replicaProcessedOffset += payloadLen
+                processed = s.replicaProcessedOffset
+                s.repMu.Unlock()
+            } else {
+                s.repMu.Lock()
+                processed = s.replicaProcessedOffset
+                s.repMu.Unlock()
+            }
 
             // Handle REPLCONF GETACK *: reply to master with our processed offset
-            if strings.ToUpper(parts[0]) == "REPLCONF" && len(parts) >= 3 && strings.ToUpper(parts[1]) == "GETACK" && parts[2] == "*" {
+            if cmd == "REPLCONF" && len(parts) >= 3 && strings.ToUpper(parts[1]) == "GETACK" && parts[2] == "*" {
                 offStr := strconv.FormatInt(processed, 10)
                 resp := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offStr), offStr)
                 if _, err := conn.Write([]byte(resp)); err != nil {
