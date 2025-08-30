@@ -55,6 +55,10 @@ type Server struct {
 	// RDB-related configuration
 	configDir        string
 	configDBFilename string
+
+	// Pub/Sub: server-wide subscription counts per channel
+	subMu       sync.Mutex
+	channelSubs map[string]int
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
@@ -615,6 +619,7 @@ func New() *Server {
         // RDB defaults
         configDir:        ".",
         configDBFilename: "dump.rdb",
+        channelSubs:      make(map[string]int),
     }
 }
 
@@ -697,6 +702,24 @@ func (s *Server) handleConnection(conn net.Conn) {
 
     reader := bufio.NewReader(conn)
     state := &connState{}
+
+    // Ensure we clean up server-wide subscription counts when the client disconnects
+    defer func() {
+        if state.subscribedChannels != nil {
+            s.subMu.Lock()
+            for ch, ok := range state.subscribedChannels {
+                if ok {
+                    if s.channelSubs[ch] > 0 {
+                        s.channelSubs[ch]--
+                        if s.channelSubs[ch] == 0 {
+                            delete(s.channelSubs, ch)
+                        }
+                    }
+                }
+            }
+            s.subMu.Unlock()
+        }
+    }()
 
     // Helper function to read a line from the connection (up to and including the CRLF)
     readLine := func() (string, error) {
@@ -1021,6 +1044,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             if !state.subscribedChannels[ch] {
                 state.subscribedChannels[ch] = true
                 count++
+                // Update server-wide subscription count
+                s.subMu.Lock()
+                s.channelSubs[ch]++
+                s.subMu.Unlock()
             }
             // RESP: ["subscribe", ch, (integer) count]
             resp := bytes.Buffer{}
@@ -1030,6 +1057,19 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             resp.WriteString(fmt.Sprintf(":%d\r\n", count))
             conn.Write(resp.Bytes())
         }
+
+    case "PUBLISH":
+        // Syntax: PUBLISH channel message -> integer reply: number of subscribers to channel
+        if len(parts) < 3 {
+            conn.Write([]byte("-ERR wrong number of arguments for 'publish' command\r\n"))
+            return
+        }
+        ch := parts[1]
+        // message := parts[2] // Not used in this stage
+        s.subMu.Lock()
+        subs := s.channelSubs[ch]
+        s.subMu.Unlock()
+        conn.Write([]byte(fmt.Sprintf(":%d\r\n", subs)))
 
     case "ECHO":
         if len(parts) == 2 {
