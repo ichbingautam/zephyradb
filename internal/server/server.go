@@ -1478,6 +1478,16 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             conn.Write([]byte("-ERR wrong number of arguments for 'ZRANGE' command\r\n"))
         }
 
+    case "ZCARD":
+        // ZCARD key -> integer cardinality (0 if missing)
+        if len(parts) == 2 {
+            key := parts[1]
+            n := s.store.ZCard(key)
+            conn.Write([]byte(fmt.Sprintf(":%d\r\n", n)))
+        } else {
+            conn.Write([]byte("-ERR wrong number of arguments for 'ZCARD' command\r\n"))
+        }
+
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section
 		if len(parts) >= 2 && strings.ToLower(parts[1]) == "replication" {

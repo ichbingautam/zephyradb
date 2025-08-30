@@ -14,6 +14,20 @@ type ZSet struct {
     scores map[string]float64
 }
 
+// ZCard returns the cardinality of the sorted set stored at key.
+// Returns 0 if the key doesn't exist or doesn't hold a zset.
+func (s *Store) ZCard(key string) int64 {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+
+    entry, exists := s.data[key]
+    if !exists || entry.Type != types.TypeZSet {
+        return 0
+    }
+    zs, _ := entry.Value.(*ZSet)
+    return int64(len(zs.scores))
+}
+
 // ZRange returns members in the sorted set stored at key between indexes
 // start and stop (inclusive), ordered by increasing score and lexicographically
 // for ties. If key doesn't exist or is not a zset, returns empty slice.
