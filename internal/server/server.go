@@ -687,7 +687,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Syntax: WAIT numreplicas timeout
 		// The tester calls: WAIT 0 60000 -> respond immediately with 0.
 		var numReplicas int
-		if len(parts) >= 9 {
+		if len(parts) >= 7 {
 			// parts[4] is numreplicas, parts[6] is timeout
 			if v, err := strconv.Atoi(parts[4]); err == nil {
 				numReplicas = v
