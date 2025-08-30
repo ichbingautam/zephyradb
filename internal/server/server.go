@@ -577,32 +577,80 @@ func (s *Server) Start(addr string) error {
 //   - Writing formatted responses back to the client
 //   - Managing connection state and cleanup
 //
-// Parameters:
 //   - conn: The TCP connection to the client
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Set a read deadline to prevent hanging
-	err := conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Set read and write timeouts
+	err := conn.SetDeadline(time.Now().Add(30 * time.Second))
 	if err != nil {
-		fmt.Printf("Error setting read deadline: %v\n", err)
+		fmt.Printf("Error setting deadline: %v\n", err)
 		return
 	}
 
-	// Create a TeeReader to log all incoming data
-	var buf bytes.Buffer
-	tee := io.TeeReader(conn, &buf)
-	reader := bufio.NewReader(tee)
+	reader := bufio.NewReader(conn)
 	state := &connState{}
 
-	// Log new connection
-	fmt.Printf("New connection from %s\n", conn.RemoteAddr().String())
+	// Helper function to read a line from the connection (up to and including the CRLF)
+	readLine := func() (string, error) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return line, nil
+	}
+
+	// Helper function to read a bulk string
+	readBulkString := func() (string, error) {
+		// Read the length line (e.g., "$6\r\n")
+		lengthLine, err := readLine()
+		if err != nil {
+			return "", fmt.Errorf("error reading bulk string length: %v", err)
+		}
+
+		// Parse the length (e.g., "$6\r\n" -> "6")
+		if !strings.HasPrefix(lengthLine, "$") {
+			return "", fmt.Errorf("expected bulk string header, got: %q", lengthLine)
+		}
+
+		// Extract just the number part (remove '$' and trim CRLF)
+		numberPart := strings.TrimSuffix(lengthLine[1:], "\r\n")
+		length, err := strconv.Atoi(numberPart)
+		if err != nil {
+			return "", fmt.Errorf("invalid bulk string length: %v", err)
+		}
+
+		// Special case: null bulk string
+		if length == -1 {
+			return "", nil
+		}
+
+		// Read the data (not including the CRLF)
+		data := make([]byte, length)
+		_, err = io.ReadFull(reader, data)
+		if err != nil {
+			return "", fmt.Errorf("error reading bulk string data: %v", err)
+		}
+
+		// Read and verify the trailing CRLF
+		crlf := make([]byte, 2)
+		_, err = io.ReadFull(reader, crlf)
+		if err != nil {
+			return "", fmt.Errorf("error reading CRLF: %v", err)
+		}
+		if crlf[0] != '\r' || crlf[1] != '\n' {
+			return "", fmt.Errorf("expected CRLF after bulk string data, got: %q", crlf)
+		}
+
+		return string(data), nil
+	}
 
 	for {
-		// Log all received data so far
-		data, _ := io.ReadAll(&buf)
-		if len(data) > 0 {
-			fmt.Printf("Received data: %q\n", data)
+		// Reset read deadline
+		err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if err != nil {
+			fmt.Printf("Error resetting read deadline: %v\n", err)
+			return
 		}
 
 		// Read the first character to determine the RESP type
@@ -613,83 +661,75 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			return
 		}
+		fmt.Printf("Read first character: %q (0x%x)\n", firstChar, firstChar)
 
-		// Reset read deadline
-		err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		if err != nil {
-			fmt.Printf("Error resetting read deadline: %v\n", err)
-			return
-		}
-
-		fmt.Printf("First character: %q (0x%x)\n", firstChar, firstChar)
+		// For array type, we've already read the '*' character
+		// so we don't need to unread it
 
 		switch firstChar {
 		case '*': // Array
-			// Read the number of elements in the array
-			sizeLine, err := reader.ReadString('\n')
+			// Read the array size line (e.g., "3\r\n")
+			sizeLine, err := readLine()
 			if err != nil {
 				fmt.Printf("Error reading array size: %v\n", err)
 				return
 			}
-			size, err := strconv.Atoi(strings.TrimSpace(sizeLine))
+
+			// Parse the array size (e.g., "3" from "3\r\n")
+			sizeStr := strings.TrimSuffix(sizeLine, "\r\n")
+			size, err := strconv.Atoi(sizeStr)
 			if err != nil {
-				fmt.Printf("Invalid array size: %v\n", err)
+				fmt.Printf("Invalid array size: %v (line: %q)\n", err, sizeLine)
 				return
 			}
+
+			fmt.Printf("Array size: %d\n", size)
 
 			// Read each element in the array
 			parts := make([]string, 0, size)
 			for i := 0; i < size; i++ {
-				// Read the bulk string header
-				header, err := reader.ReadString('\n')
+				// Read the first character of the next element
+				firstChar, err := reader.ReadByte()
 				if err != nil {
-					fmt.Printf("Error reading bulk string header: %v\n", err)
+					fmt.Printf("Error reading element type: %v\n", err)
 					return
 				}
 
-				if !strings.HasPrefix(header, "$") {
-					fmt.Printf("Expected bulk string header, got: %q\n", header)
-					return
-				}
+				// For bulk strings, read the length and data
+				if firstChar == '$' {
+					// Put the '$' back for readBulkString to handle
+					if err := reader.UnreadByte(); err != nil {
+						fmt.Printf("Error unreading byte: %v\n", err)
+						return
+					}
 
-				// Read the bulk string data
-				length, err := strconv.Atoi(strings.TrimSpace(header[1:]))
-				if err != nil {
-					fmt.Printf("Invalid bulk string length: %v\n", err)
-					return
+					// Read the bulk string
+					data, err := readBulkString()
+					if err != nil {
+						fmt.Printf("Error reading bulk string: %v\n", err)
+						return
+					}
+					parts = append(parts, data)
+				} else {
+					// For simple strings, read until CRLF
+					line, err := readLine()
+					if err != nil {
+						fmt.Printf("Error reading simple string: %v\n", err)
+						return
+					}
+					parts = append(parts, strings.TrimSuffix(line, "\r\n"))
 				}
-
-				// Special case: if length is -1, it's a null bulk string
-				if length == -1 {
-					parts = append(parts, "")
-					continue
-				}
-
-				// Read the actual string data
-				data := make([]byte, length)
-				_, err = io.ReadFull(reader, data)
-				if err != nil {
-					fmt.Printf("Error reading bulk string data: %v\n", err)
-					return
-				}
-
-				// Read the trailing CRLF
-				_, err = reader.ReadByte() // CR
-				if err != nil {
-					fmt.Printf("Error reading CR: %v\n", err)
-					return
-				}
-				_, err = reader.ReadByte() // LF
-				if err != nil {
-					fmt.Printf("Error reading LF: %v\n", err)
-					return
-				}
-
-				parts = append(parts, string(data))
 			}
+
+			// Log the parsed command
+			fmt.Printf("Parsed command: %v\n", parts)
 
 			// Process the complete command
 			if len(parts) > 0 {
+				// Log the raw parts for debugging
+				fmt.Printf("Raw command parts: %#v\n", parts)
+				// The parts array already contains the parsed command and arguments
+				// No need to filter out anything as the RESP parsing already handled that
 				s.handleCommand(conn, parts, state)
 			}
 
