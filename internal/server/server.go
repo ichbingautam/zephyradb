@@ -792,8 +792,15 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s.repMu.Unlock()
 
 	case "SUBSCRIBE":
+		// Extract channel names from the command parts
+		if len(parts) < 5 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'subscribe' command\r\n"))
+			return
+		}
+		// The channel names start from parts[4] (0-based index)
+		channels := parts[4:]
 		// Create and execute the SUBSCRIBE command
-		cmd, err := commands.NewSubscribeCommand(parts[4:])
+		cmd, err := commands.NewSubscribeCommand(channels)
 		if err != nil {
 			conn.Write([]byte(fmt.Sprintf("-ERR %s\r\n", err.Error())))
 			return
