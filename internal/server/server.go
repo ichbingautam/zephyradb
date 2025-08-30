@@ -390,5 +390,93 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			}
 		}
 		conn.Write([]byte(resp))
+
+	case "XREAD":
+		// Support: XREAD STREAMS key id  (single stream minimal)
+		// General parsing for multiple streams: XREAD STREAMS key1 ... keyN id1 ... idN
+		if len(parts) < 9 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
+			return
+		}
+		if strings.ToUpper(parts[4]) != "STREAMS" {
+			conn.Write([]byte("-ERR syntax error\r\n"))
+			return
+		}
+		// Count how many value tokens remain after STREAMS
+		// Value tokens are every 2nd element: positions 6,8,10,...
+		remaining := (len(parts) - 5) / 2
+		if remaining <= 0 || remaining%2 != 0 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
+			return
+		}
+		n := remaining / 2 // number of streams
+		keys := make([]string, 0, n)
+		ids := make([]string, 0, n)
+		// keys
+		for i := 0; i < n; i++ {
+			idx := 6 + i*2
+			if idx >= len(parts) {
+				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
+				return
+			}
+			keys = append(keys, parts[idx])
+		}
+		// ids
+		for j := 0; j < n; j++ {
+			idx := 6 + n*2 + j*2
+			if idx >= len(parts) {
+				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
+				return
+			}
+			ids = append(ids, parts[idx])
+		}
+
+		entriesByKey, err := s.store.XREAD(keys, ids, false)
+		if err != nil {
+			conn.Write([]byte(fmt.Sprintf("-ERR %v\r\n", err)))
+			return
+		}
+
+		// Build RESP reply: array of [ key, [ [id, [field, value, ...]], ... ] ]
+		// Only include streams that have results
+		// Count non-empty streams first
+		count := 0
+		for _, k := range keys {
+			if es, ok := entriesByKey[k]; ok && len(es) > 0 {
+				count++
+			}
+		}
+		if count == 0 {
+			// Null array as per Redis when nothing to return
+			conn.Write([]byte("*-1\r\n"))
+			return
+		}
+
+		resp := fmt.Sprintf("*%d\r\n", count)
+		for _, k := range keys {
+			entries, ok := entriesByKey[k]
+			if !ok || len(entries) == 0 {
+				continue
+			}
+			// [ key, entries_array ]
+			resp += "*2\r\n"
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(k), k)
+			// entries_array
+			resp += fmt.Sprintf("*%d\r\n", len(entries))
+			for _, e := range entries {
+				// each entry: [ id, fields_array ]
+				resp += "*2\r\n"
+				idStr := e.ID.String()
+				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(idStr), idStr)
+				// fields array (flat)
+				fieldCount := len(e.Fields) * 2
+				resp += fmt.Sprintf("*%d\r\n", fieldCount)
+				for fk, fv := range e.Fields {
+					resp += fmt.Sprintf("$%d\r\n%s\r\n", len(fk), fk)
+					resp += fmt.Sprintf("$%d\r\n%s\r\n", len(fv), fv)
+				}
+			}
+		}
+		conn.Write([]byte(resp))
 	}
 }
