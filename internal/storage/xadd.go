@@ -117,8 +117,11 @@ func (s *Store) XREAD(streams []string, ids []string, block bool, timeoutMs int6
 		return result, nil
 	}
 
-	// Block and wait for new data, polling until timeout
-	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	// Block and wait for new data. For timeoutMs == 0, block indefinitely.
+	var deadline time.Time
+	if timeoutMs > 0 {
+		deadline = time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	}
 	for {
 		// Small sleep to avoid busy waiting
 		time.Sleep(10 * time.Millisecond)
@@ -138,7 +141,7 @@ func (s *Store) XREAD(streams []string, ids []string, block bool, timeoutMs int6
 		if hasData {
 			return result, nil
 		}
-		if time.Now().After(deadline) {
+		if !deadline.IsZero() && time.Now().After(deadline) {
 			// Timed out
 			return result, nil
 		}
