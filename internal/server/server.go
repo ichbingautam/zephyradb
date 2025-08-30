@@ -29,6 +29,11 @@ import (
 type Server struct {
 	// store is the thread-safe storage engine that handles all data operations
 	store *storage.Store
+	// role indicates whether this server is a master or a slave (replica)
+	role string // "master" or "slave"
+	// master connection info (used in later stages)
+	masterHost string
+	masterPort int
 }
 
 // connState holds per-connection state such as transaction mode
@@ -63,7 +68,15 @@ func (c *respCaptureConn) SetWriteDeadline(t time.Time) error { return nil }
 func New() *Server {
 	return &Server{
 		store: storage.New(),
+		role:  "master",
 	}
+}
+
+// SetReplicaOf configures the server as a replica of the given master host:port
+func (s *Server) SetReplicaOf(host string, port int) {
+	s.role = "slave"
+	s.masterHost = host
+	s.masterPort = port
 }
 
 // Start initializes the server and begins listening for client connections.
@@ -421,7 +434,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section
 		if len(parts) >= 5 && strings.ToLower(parts[4]) == "replication" {
-			payload := "# Replication\r\nrole:master\r\n"
+			payload := fmt.Sprintf("# Replication\r\nrole:%s\r\n", s.role)
 			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
 			conn.Write([]byte(resp))
 		} else {
