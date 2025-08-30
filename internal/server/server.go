@@ -64,6 +64,22 @@ type Server struct {
 	subConns map[string]map[net.Conn]bool
 }
 
+// Convert unit string to meters factor. Supports m, km, mi, ft
+func geoUnitFactor(unit string) (float64, bool) {
+    switch strings.ToLower(unit) {
+    case "m":
+        return 1.0, true
+    case "km":
+        return 1000.0, true
+    case "mi":
+        return 1609.34, true
+    case "ft":
+        return 0.3048, true
+    default:
+        return 0, false
+    }
+}
+
 // Haversine distance between two points (degrees) on a sphere of radius R meters
 func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
     // convert to radians
@@ -1333,6 +1349,65 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		dist := haversine(lat1, lon1, lat2, lon2, earthRadius)
 		val := fmt.Sprintf("%.4f", dist)
 		resp := fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+		conn.Write([]byte(resp))
+
+	case "GEOSEARCH":
+		// GEOSEARCH key FROMLONLAT lon lat BYRADIUS radius unit
+		if len(parts) < 8 {
+			conn.Write([]byte("-ERR wrong number of arguments for 'geosearch' command\r\n"))
+			return
+		}
+		key := parts[1]
+		if strings.ToUpper(parts[2]) != "FROMLONLAT" {
+			conn.Write([]byte("-ERR syntax error\r\n"))
+			return
+		}
+		lon, err1 := strconv.ParseFloat(parts[3], 64)
+		lat, err2 := strconv.ParseFloat(parts[4], 64)
+		if err1 != nil || err2 != nil {
+			conn.Write([]byte("-ERR invalid longitude or latitude\r\n"))
+			return
+		}
+		if strings.ToUpper(parts[5]) != "BYRADIUS" {
+			conn.Write([]byte("-ERR syntax error\r\n"))
+			return
+		}
+		radius, err3 := strconv.ParseFloat(parts[6], 64)
+		unit := parts[7]
+		if err3 != nil || radius < 0 {
+			conn.Write([]byte("-ERR radius must be positive\r\n"))
+			return
+		}
+		factor, ok := geoUnitFactor(unit)
+		if !ok {
+			conn.Write([]byte("-ERR invalid unit\r\n"))
+			return
+		}
+		// fetch all members from zset
+		n := s.store.ZCard(key)
+		members := s.store.ZRange(key, 0, n-1)
+		matches := make([]string, 0)
+		// Precompute center in radians
+		const earthRadius = 6372797.560856
+		// Iterate members, decode coords, compute distance
+		for _, m := range members {
+			sc, ok := s.store.ZScore(key, m)
+			if !ok {
+				continue
+			}
+			lonb, latb := deinterleaveBits(uint64(sc))
+			mlon := bitsToCoord(lonb, geoLonMin, geoLonMax, geoStep)
+			mlat := bitsToCoord(latb, geoLatMin, geoLatMax, geoStep)
+			d := haversine(lat, lon, mlat, mlon, earthRadius)
+			if d <= radius*factor {
+				matches = append(matches, m)
+			}
+		}
+		// Build RESP array of matches
+		resp := fmt.Sprintf("*%d\r\n", len(matches))
+		for _, m := range matches {
+			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(m), m)
+		}
 		conn.Write([]byte(resp))
 
 	case "SET":
