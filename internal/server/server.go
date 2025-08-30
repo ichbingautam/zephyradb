@@ -732,12 +732,12 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Accept replication config hints from replicas. Always respond OK.
 		// Examples: REPLCONF listening-port <port>, REPLCONF capa psync2, REPLCONF ACK <offset>
 		respondOK := true
-		if len(parts) >= 7 {
-			sub := strings.ToLower(parts[4])
+		if len(parts) >= 3 {
+			sub := strings.ToLower(parts[1])
 			switch sub {
 			case "listening-port":
-				if len(parts) >= 8 {
-					if p, err := strconv.Atoi(parts[6]); err == nil {
+				if len(parts) >= 3 {
+					if p, err := strconv.Atoi(parts[2]); err == nil {
 						s.listenPort = p
 					}
 				}
@@ -748,9 +748,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 					if s.ackSeen == nil {
 						s.ackSeen = make(map[string]bool)
 					}
-					// Parse replica-provided ACK offset from parts[6] (for debugging if needed)
-					if len(parts) >= 7 {
-						// ackOffset := parts[6] // Available if needed for debugging
+					// Parse replica-provided ACK offset from parts[2] (for debugging if needed)
+					if len(parts) >= 3 {
+						// ackOffset := parts[2] // Available if needed for debugging
 					}
 					// Identify this replica uniquely by remote address
 					addr := ""
@@ -810,8 +810,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		conn.Write(response.Format())
 
 	case "ECHO":
-		if len(parts) == 5 {
-			arg := parts[4]
+		if len(parts) == 2 {
+			arg := parts[1]
 			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
 			conn.Write([]byte(resp))
 		}
@@ -855,14 +855,14 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		conn.Write([]byte(resp))
 
 	case "SET":
-		if len(parts) >= 7 {
-			key := parts[4]
-			value := parts[6]
+		if len(parts) >= 3 {
+			key := parts[1]
+			value := parts[2]
 			var expiryMs int64
 
 			// Handle PX argument
-			if len(parts) == 11 && strings.ToUpper(parts[8]) == "PX" {
-				if ms, err := strconv.ParseInt(parts[10], 10, 64); err == nil {
+			if len(parts) >= 5 && strings.ToUpper(parts[3]) == "PX" {
+				if ms, err := strconv.ParseInt(parts[4], 10, 64); err == nil {
 					expiryMs = ms
 				}
 			}
@@ -874,8 +874,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "GET":
-		if len(parts) == 5 {
-			key := parts[4]
+		if len(parts) == 2 {
+			key := parts[1]
 			if value, exists := s.store.GetString(key); exists {
 				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
 				conn.Write([]byte(resp))
@@ -885,8 +885,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "INCR":
-		if len(parts) == 5 {
-			key := parts[4]
+		if len(parts) == 2 {
+			key := parts[1]
 			if value, exists := s.store.GetString(key); exists {
 				// Parse existing value
 				iv, err := strconv.ParseInt(value, 10, 64)
@@ -907,12 +907,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "RPUSH":
-		if len(parts) >= 7 {
-			key := parts[4]
-			values := make([]string, 0)
-			for i := 6; i < len(parts); i += 2 {
-				values = append(values, parts[i])
-			}
+		if len(parts) >= 3 {
+			key := parts[1]
+			values := parts[2:]
 			length := s.store.RPush(key, values...)
 			resp := fmt.Sprintf(":%d\r\n", length)
 			conn.Write([]byte(resp))
@@ -921,12 +918,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "LPUSH":
-		if len(parts) >= 7 {
-			key := parts[4]
-			values := make([]string, 0)
-			for i := 6; i < len(parts); i += 2 {
-				values = append(values, parts[i])
-			}
+		if len(parts) >= 3 {
+			key := parts[1]
+			values := parts[2:]
 			length := s.store.LPush(key, values...)
 			resp := fmt.Sprintf(":%d\r\n", length)
 			conn.Write([]byte(resp))
@@ -935,15 +929,15 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "LPOP":
-		if len(parts) < 5 {
+		if len(parts) < 2 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'lpop' command\r\n"))
 			return
 		}
-		key := parts[4]
+		key := parts[1]
 		count := int64(1)
-		if len(parts) >= 7 {
+		if len(parts) >= 3 {
 			var err error
-			count, err = strconv.ParseInt(parts[6], 10, 64)
+			count, err = strconv.ParseInt(parts[2], 10, 64)
 			if err != nil {
 				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 				return
@@ -956,7 +950,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			return
 		}
 
-		if len(parts) >= 7 {
+		if len(parts) >= 3 {
 			// Multi-element response
 			resp := fmt.Sprintf("*%d\r\n", len(values))
 			for _, v := range values {
@@ -976,22 +970,22 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s.propagate(parts)
 
 	case "LLEN":
-		if len(parts) == 5 {
-			key := parts[4]
+		if len(parts) == 2 {
+			key := parts[1]
 			length := s.store.LLen(key)
 			resp := fmt.Sprintf(":%d\r\n", length)
 			conn.Write([]byte(resp))
 		}
 
 	case "LRANGE":
-		if len(parts) == 9 {
-			key := parts[4]
-			start, err := strconv.ParseInt(parts[6], 10, 64)
+		if len(parts) == 4 {
+			key := parts[1]
+			start, err := strconv.ParseInt(parts[2], 10, 64)
 			if err != nil {
 				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 				return
 			}
-			stop, err := strconv.ParseInt(parts[8], 10, 64)
+			stop, err := strconv.ParseInt(parts[3], 10, 64)
 			if err != nil {
 				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 				return
@@ -1006,14 +1000,14 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "LREM":
-		if len(parts) == 9 {
-			key := parts[4]
-			count, err := strconv.ParseInt(parts[6], 10, 64)
+		if len(parts) == 4 {
+			key := parts[1]
+			count, err := strconv.ParseInt(parts[2], 10, 64)
 			if err != nil {
 				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
 				return
 			}
-			value := parts[8]
+			value := parts[3]
 
 			removed := s.store.LRem(key, count, value)
 			resp := fmt.Sprintf(":%d\r\n", removed)
@@ -1023,9 +1017,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "BLPOP":
-		if len(parts) >= 7 {
+		if len(parts) >= 3 {
 			keys := make([]string, 0)
-			for i := 4; i < len(parts)-2; i += 2 {
+			for i := 1; i < len(parts)-1; i++ {
 				keys = append(keys, parts[i])
 			}
 			timeout, err := strconv.ParseFloat(parts[len(parts)-1], 64)
@@ -1048,8 +1042,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "TYPE":
-		if len(parts) == 5 {
-			key := parts[4]
+		if len(parts) == 2 {
+			key := parts[1]
 			entry, exists := s.store.Get(key)
 			if !exists {
 				conn.Write([]byte("+none\r\n"))
@@ -1057,12 +1051,12 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			}
 
 			var typeStr string
-			switch entry.Type {
-			case types.TypeString:
+			switch entry.Value.(type) {
+			case string:
 				typeStr = "string"
-			case types.TypeList:
+			case []string:
 				typeStr = "list"
-			case types.TypeStream:
+			case *storage.Stream:
 				typeStr = "stream"
 			default:
 				typeStr = "none"
@@ -1073,7 +1067,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section
-		if len(parts) >= 5 && strings.ToLower(parts[4]) == "replication" {
+		if len(parts) >= 2 && strings.ToLower(parts[1]) == "replication" {
 			payload := fmt.Sprintf("# Replication\r\nrole:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\n", s.role, s.replID, s.replOffset)
 			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
 			conn.Write([]byte(resp))
@@ -1084,21 +1078,19 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 	case "CONFIG":
 		// Handle: CONFIG GET <key>
-		if len(parts) >= 7 && strings.ToUpper(parts[4]) == "GET" {
-			key := strings.ToLower(parts[6])
+		if len(parts) >= 3 && strings.ToUpper(parts[1]) == "GET" {
+			key := strings.ToLower(parts[2])
 			switch key {
 			case "dir":
 				k := "dir"
 				v := s.configDir
 				resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v)
 				conn.Write([]byte(resp))
-				return
 			case "dbfilename":
 				k := "dbfilename"
 				v := s.configDBFilename
 				resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v)
 				conn.Write([]byte(resp))
-				return
 			default:
 				// Unknown key -> empty array
 				conn.Write([]byte("*0\r\n"))
@@ -1110,7 +1102,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 	case "KEYS":
 		// Only support pattern "*"
-		if len(parts) >= 5 && parts[4] == "*" {
+		if len(parts) >= 2 && parts[1] == "*" {
 			keys := s.store.KeysAll()
 			// Build RESP array
 			var buf bytes.Buffer
@@ -1119,7 +1111,6 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(k), k))
 			}
 			conn.Write(buf.Bytes())
-			return
 		}
 		conn.Write([]byte("*0\r\n"))
 
@@ -1128,13 +1119,15 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Syntax: WAIT numreplicas timeout
 		var numReplicas int
 		var timeoutMs int
-		if len(parts) >= 7 {
-			// parts[4] is numreplicas, parts[6] is timeout
-			if v, err := strconv.Atoi(parts[4]); err == nil {
+		if len(parts) >= 3 {
+			// parts[1] is numreplicas, parts[2] is timeout
+			if v, err := strconv.Atoi(parts[1]); err == nil {
 				numReplicas = v
 			}
-			if t, err := strconv.Atoi(parts[6]); err == nil {
-				timeoutMs = t
+			if len(parts) >= 3 {
+				if t, err := strconv.Atoi(parts[2]); err == nil {
+					timeoutMs = t
+				}
 			}
 		}
 
@@ -1197,12 +1190,12 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "XADD":
-		if len(parts) < 9 || len(parts)%2 != 1 {
+		if len(parts) < 3 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xadd' command\r\n"))
 			return
 		}
-		key := parts[4]
-		streamID := parts[6]
+		key := parts[1]
+		streamID := parts[2]
 
 		// Parse stream ID
 		var id *storage.StreamID
@@ -1242,13 +1235,13 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s.propagate(parts)
 
 	case "XRANGE":
-		if len(parts) != 9 {
+		if len(parts) != 4 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xrange' command\r\n"))
 			return
 		}
-		key := parts[4]
-		start := parts[6]
-		end := parts[8]
+		key := parts[1]
+		start := parts[2]
+		end := parts[3]
 
 		entries, err := s.store.XRANGE(key, start, end)
 		if err != nil {
