@@ -418,6 +418,17 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			conn.Write([]byte(resp))
 		}
 
+	case "INFO":
+		// Support: INFO replication -> returns bulk string with replication section
+		if len(parts) >= 5 && strings.ToLower(parts[4]) == "replication" {
+			payload := "# Replication\r\nrole:master\r\n"
+			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
+			conn.Write([]byte(resp))
+		} else {
+			// For other sections or missing arg, return a null bulk string
+			conn.Write([]byte("$-1\r\n"))
+		}
+
 	case "XADD":
 		if len(parts) < 9 || len(parts)%2 != 1 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xadd' command\r\n"))
