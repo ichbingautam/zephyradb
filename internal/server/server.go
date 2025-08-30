@@ -45,6 +45,8 @@ type Server struct {
 	replicaConns []net.Conn
 	// repMu guards access to replicaConns and writes to them
 	repMu sync.Mutex
+	// replicaProcessedOffset tracks bytes of commands processed by this replica over the replication connection
+	replicaProcessedOffset int64
 }
 
 // propagate sends a parsed RESP command (as captured in parts) to the replica connection, if present.
@@ -189,12 +191,20 @@ func (s *Server) startReplicaHandshake() {
         }
         parts2 = append(parts2, line)
         if expected2 > 0 && len(parts2) == expected2 {
-            // Check for REPLCONF GETACK * and reply with ACK 0
+            // Compute exact byte length of this full command as received over the wire
+            var cmdBytes int
+            for _, ln := range parts2 {
+                cmdBytes += len(ln) + 2 // +2 for CRLF
+            }
+            // Check for REPLCONF GETACK * and reply with ACK <offset>
             if len(parts2) >= 7 {
                 cmd := strings.ToUpper(parts2[2])
                 if cmd == "REPLCONF" && strings.ToUpper(parts2[4]) == "GETACK" {
-                    ack := "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+                    // Reply with current processed offset (before counting this GETACK)
+                    ack := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.FormatInt(s.replicaProcessedOffset, 10)), s.replicaProcessedOffset)
                     _, _ = conn.Write([]byte(ack))
+                    // Now count the GETACK command itself towards processed bytes
+                    s.replicaProcessedOffset += int64(cmdBytes)
                     parts2 = nil
                     expected2 = 0
                     continue
@@ -202,6 +212,8 @@ func (s *Server) startReplicaHandshake() {
             }
             // Execute other commands silently (no response back to master)
             s.handleCommand(silentConn, parts2, state)
+            // Count processed command bytes after applying
+            s.replicaProcessedOffset += int64(cmdBytes)
             parts2 = nil
             expected2 = 0
         }
