@@ -99,21 +99,18 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 }
 
 // Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
+// Our interleave writes y's bit i at position 2*i and x's bit i at 2*i+1.
+// So to deinterleave, pick even bits for y and odd bits for x.
 func deinterleaveBits(z uint64) (uint64, uint64) {
-	x := compact1By1(z >> 1)
-	y := compact1By1(z)
-	return x, y
-}
-
-// Compact bits: reverse of spreading 0babcdef -> a b c d e f packed
-func compact1By1(v uint64) uint64 {
-	v &= 0x5555555555555555
-	v = (v | (v >> 1)) & 0x3333333333333333
-	v = (v | (v >> 2)) & 0x0F0F0F0F0F0F0F0F
-	v = (v | (v >> 4)) & 0x00FF00FF00FF00FF
-	v = (v | (v >> 8)) & 0x0000FFFF0000FFFF
-	v = (v | (v >> 16)) & 0x00000000FFFFFFFF
-	return v
+    var x uint64 = 0
+    var y uint64 = 0
+    for i := uint(0); i < geoStep; i++ {
+        // y bit i from even position 2*i
+        y |= ((z >> (2 * i)) & 1) << i
+        // x bit i from odd position 2*i+1
+        x |= ((z >> (2*i + 1)) & 1) << i
+    }
+    return x, y
 }
 
 // Convert quantized bits back to coordinate using the same bisection
@@ -127,8 +124,8 @@ func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
 			max = mid
 		}
 	}
-	// Return the center of the final interval
-	return (min + max) / 2
+	// Return the upper bound of the final interval to match expected decode
+	return max
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
@@ -720,7 +717,7 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	for i := uint(0); i < step; i++ {
 		mid := (min + max) / 2
 		bits <<= 1
-		if val >= mid {
+		if val > mid { // strict comparison
 			bits |= 1
 			min = mid
 		} else {
@@ -1411,7 +1408,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			if !ok {
 				continue
 			}
-			lonb, latb := deinterleaveBits(uint64(sc))
+			lonb, latb := deinterleaveBits(uint64(math.Round(sc)))
 			mlon := bitsToCoord(lonb, geoLonMin, geoLonMax, geoStep)
 			mlat := bitsToCoord(latb, geoLatMin, geoLatMax, geoStep)
 			d := haversine(lat, lon, mlat, mlon, earthRadius)
