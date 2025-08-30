@@ -695,7 +695,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) {
-	if len(parts) < 3 {
+	if len(parts) < 2 {
 		fmt.Printf("Invalid command parts: %v\n", parts)
 		return
 	}
@@ -793,12 +793,12 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 	case "SUBSCRIBE":
 		// Extract channel names from the command parts
-		if len(parts) < 5 {
+		if len(parts) < 2 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'subscribe' command\r\n"))
 			return
 		}
-		// The channel names start from parts[4] (0-based index)
-		channels := parts[4:]
+		// The channel names start from parts[1] (0-based index)
+		channels := parts[1:]
 		// Create and execute the SUBSCRIBE command
 		cmd, err := commands.NewSubscribeCommand(channels)
 		if err != nil {
