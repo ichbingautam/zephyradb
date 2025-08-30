@@ -34,6 +34,9 @@ type Server struct {
 	// master connection info (used in later stages)
 	masterHost string
 	masterPort int
+	// replication identity and offset
+	replID     string
+	replOffset int64
 }
 
 // connState holds per-connection state such as transaction mode
@@ -69,6 +72,9 @@ func New() *Server {
 	return &Server{
 		store: storage.New(),
 		role:  "master",
+		// Hardcode a 40-char pseudo random string as replication ID for this stage
+		replID:     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
+		replOffset: 0,
 	}
 }
 
@@ -434,7 +440,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section
 		if len(parts) >= 5 && strings.ToLower(parts[4]) == "replication" {
-			payload := fmt.Sprintf("# Replication\r\nrole:%s\r\n", s.role)
+			payload := fmt.Sprintf("# Replication\r\nrole:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\n", s.role, s.replID, s.replOffset)
 			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
 			conn.Write([]byte(resp))
 		} else {
