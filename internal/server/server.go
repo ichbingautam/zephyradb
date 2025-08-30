@@ -40,9 +40,9 @@ type Server struct {
 	replOffset int64
 	// local listening port for REPLCONF listening-port
 	listenPort int
-	// replicaConn holds the active replication connection to a single replica
-	replicaConn net.Conn
-	// repMu guards access to replicaConn and writes to it
+	// replicaConns holds active replication connections to replicas
+	replicaConns []net.Conn
+	// repMu guards access to replicaConns and writes to them
 	repMu sync.Mutex
 }
 
@@ -54,7 +54,7 @@ func (s *Server) propagate(parts []string) {
     }
     s.repMu.Lock()
     defer s.repMu.Unlock()
-    if s.replicaConn == nil {
+    if len(s.replicaConns) == 0 {
         return
     }
     var buf bytes.Buffer
@@ -62,7 +62,13 @@ func (s *Server) propagate(parts []string) {
         buf.WriteString(line)
         buf.WriteString("\r\n")
     }
-    _, _ = s.replicaConn.Write(buf.Bytes())
+    payload := buf.Bytes()
+    for _, rc := range s.replicaConns {
+        if rc == nil {
+            continue
+        }
+        _, _ = rc.Write(payload)
+    }
 }
 
 // emptyRDB returns a minimal, valid empty RDB payload.
@@ -313,9 +319,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		rdb := emptyRDB()
 		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
 		conn.Write(rdb) // No trailing CRLF after binary contents
-		// Mark this connection as the replication connection to propagate future writes
+		// Register this connection as a replication connection to propagate future writes
 		s.repMu.Lock()
-		s.replicaConn = conn
+		s.replicaConns = append(s.replicaConns, conn)
 		s.repMu.Unlock()
 
 	case "ECHO":
