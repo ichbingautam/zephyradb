@@ -56,344 +56,388 @@ type Server struct {
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
 func (s *Server) SetRDBConfig(dir, filename string) {
-    if dir != "" {
-        s.configDir = dir
-    }
-    if filename != "" {
-        s.configDBFilename = filename
-    }
+	if dir != "" {
+		s.configDir = dir
+	}
+	if filename != "" {
+		s.configDBFilename = filename
+	}
 }
 
 // loadRDBFromDisk loads a minimal RDB (version 11) containing up to a single string key.
 // If the file does not exist or parsing fails, it returns silently leaving the store empty.
 func (s *Server) loadRDBFromDisk() {
-    path := filepath.Join(s.configDir, s.configDBFilename)
-    f, err := os.Open(path)
-    if err != nil {
-        return
-    }
-    defer f.Close()
-    data, err := io.ReadAll(f)
-    if err != nil || len(data) < 9 {
-        return
-    }
-    // Header: "REDIS" + 4-digit version
-    if !bytes.HasPrefix(data, []byte("REDIS")) {
-        return
-    }
-    // Minimal scan for database section: look for 0xFE (DB start) then optional 0xFB sizes, then entries
-    i := 9 // after header
-    // skip metadata subsections starting with 0xFA
-    for i < len(data) && data[i] == 0xFA {
-        i++
-        // read name (string-encoded)
-        name, n := readRDBString(data[i:])
-        if n == 0 { return }
-        i += n
-        // read value (string-encoded)
-        _, n = readRDBString(data[i:])
-        if n == 0 { return }
-        i += n
-        _ = name // unused
-    }
-    if i >= len(data) || data[i] != 0xFE { // DB start
-        return
-    }
-    i++
-    // DB index (length-encoded), skip
-    _, n := readRDBLength(data[i:])
-    if n == 0 { return }
-    i += n
-    // Optional 0xFB -> sizes
-    if i < len(data) && data[i] == 0xFB {
-        i++
-        if _, n = readRDBLength(data[i:]); n == 0 { return }
-        i += n
-        if _, n = readRDBLength(data[i:]); n == 0 { return }
-        i += n
-    }
-    // Now entries until 0xFF
-    var expiresAtMs int64
-    for i < len(data) && data[i] != 0xFF {
-        if data[i] == 0xFC { // expire in ms
-            if i+9 > len(data) { return }
-            // little-endian uint64
-            var v uint64
-            for b:=0; b<8; b++ { v |= uint64(data[i+1+b]) << (8*b) }
-            expiresAtMs = int64(v)
-            i += 9
-            continue
-        }
-        if data[i] == 0xFD { // expire in seconds
-            if i+5 > len(data) { return }
-            var v uint32
-            for b:=0; b<4; b++ { v |= uint32(data[i+1+b]) << (8*b) }
-            expiresAtMs = int64(v) * 1000
-            i += 5
-            continue
-        }
-        valueType := data[i]
-        i++
-        if valueType != 0x00 { // only string supported
-            return
-        }
-        key, n := readRDBString(data[i:])
-        if n == 0 { return }
-        i += n
-        val, n := readRDBString(data[i:])
-        if n == 0 { return }
-        i += n
-        // set into store, honoring expiry if in future
-        var ttlMs int64
-        if expiresAtMs > 0 {
-            now := time.Now().UnixMilli()
-            if expiresAtMs <= now {
-                // expired, skip load
-                break
-            }
-            ttlMs = expiresAtMs - now
-        }
-        s.store.Set(key, val, ttlMs)
-        // Only single key needed for this stage
-        break
-    }
+	path := filepath.Join(s.configDir, s.configDBFilename)
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil || len(data) < 9 {
+		return
+	}
+	// Header: "REDIS" + 4-digit version
+	if !bytes.HasPrefix(data, []byte("REDIS")) {
+		return
+	}
+	// Minimal scan for database section: look for 0xFE (DB start) then optional 0xFB sizes, then entries
+	i := 9 // after header
+	// skip metadata subsections starting with 0xFA
+	for i < len(data) && data[i] == 0xFA {
+		i++
+		// read name (string-encoded)
+		name, n := readRDBString(data[i:])
+		if n == 0 {
+			return
+		}
+		i += n
+		// read value (string-encoded)
+		_, n = readRDBString(data[i:])
+		if n == 0 {
+			return
+		}
+		i += n
+		_ = name // unused
+	}
+	if i >= len(data) || data[i] != 0xFE { // DB start
+		return
+	}
+	i++
+	// DB index (length-encoded), skip
+	_, n := readRDBLength(data[i:])
+	if n == 0 {
+		return
+	}
+	i += n
+	// Optional 0xFB -> sizes
+	if i < len(data) && data[i] == 0xFB {
+		i++
+		if _, n = readRDBLength(data[i:]); n == 0 {
+			return
+		}
+		i += n
+		if _, n = readRDBLength(data[i:]); n == 0 {
+			return
+		}
+		i += n
+	}
+	// Now entries until 0xFF
+	var expiresAtMs int64
+	for i < len(data) && data[i] != 0xFF {
+		if data[i] == 0xFC { // expire in ms
+			if i+9 > len(data) {
+				return
+			}
+			// little-endian uint64
+			var v uint64
+			for b := 0; b < 8; b++ {
+				v |= uint64(data[i+1+b]) << (8 * b)
+			}
+			expiresAtMs = int64(v)
+			i += 9
+			continue
+		}
+		if data[i] == 0xFD { // expire in seconds
+			if i+5 > len(data) {
+				return
+			}
+			var v uint32
+			for b := 0; b < 4; b++ {
+				v |= uint32(data[i+1+b]) << (8 * b)
+			}
+			expiresAtMs = int64(v) * 1000
+			i += 5
+			continue
+		}
+		valueType := data[i]
+		i++
+		if valueType != 0x00 { // only string supported
+			return
+		}
+		key, n := readRDBString(data[i:])
+		if n == 0 {
+			return
+		}
+		i += n
+		val, n := readRDBString(data[i:])
+		if n == 0 {
+			return
+		}
+		i += n
+		// set into store, honoring expiry if in future
+		var ttlMs int64
+		if expiresAtMs > 0 {
+			now := time.Now().UnixMilli()
+			if expiresAtMs <= now {
+				// expired, skip load
+				break
+			}
+			ttlMs = expiresAtMs - now
+		}
+		s.store.Set(key, val, ttlMs)
+		// Only single key needed for this stage
+		break
+	}
 }
 
 // readRDBLength parses the length-encoded integer and returns (value, bytesRead).
 func readRDBLength(buf []byte) (uint64, int) {
-    if len(buf) == 0 { return 0, 0 }
-    b := buf[0]
-    top := b >> 6
-    if top == 0 { // 6-bit
-        return uint64(b & 0x3F), 1
-    }
-    if top == 1 { // 14-bit big-endian across next byte
-        if len(buf) < 2 { return 0, 0 }
-        v := (uint16(b&0x3F) << 8) | uint16(buf[1])
-        return uint64(v), 2
-    }
-    if top == 2 { // special: check for 32/64-bit lengths
-        if b == 0x80 {
-            if len(buf) < 5 { return 0, 0 }
-            v := (uint32(buf[1])<<24)|(uint32(buf[2])<<16)|(uint32(buf[3])<<8)|uint32(buf[4])
-            return uint64(v), 5
-        }
-        if b == 0x81 {
-            if len(buf) < 9 { return 0, 0 }
-            var v uint64
-            v = (uint64(buf[1])<<56)|(uint64(buf[2])<<48)|(uint64(buf[3])<<40)|(uint64(buf[4])<<32)|
-                (uint64(buf[5])<<24)|(uint64(buf[6])<<16)|(uint64(buf[7])<<8)|uint64(buf[8])
-            return v, 9
-        }
-        // legacy 32-bit case
-        if len(buf) < 5 { return 0, 0 }
-        v := (uint32(buf[1])<<24)|(uint32(buf[2])<<16)|(uint32(buf[3])<<8)|uint32(buf[4])
-        return uint64(v), 5
-    }
-    // 0b11 -> encoded string subtype not supported here in length-only context
-    return 0, 0
+	if len(buf) == 0 {
+		return 0, 0
+	}
+	b := buf[0]
+	top := b >> 6
+	if top == 0 { // 6-bit
+		return uint64(b & 0x3F), 1
+	}
+	if top == 1 { // 14-bit big-endian across next byte
+		if len(buf) < 2 {
+			return 0, 0
+		}
+		v := (uint16(b&0x3F) << 8) | uint16(buf[1])
+		return uint64(v), 2
+	}
+	if top == 2 { // special: check for 32/64-bit lengths
+		if b == 0x80 {
+			if len(buf) < 5 {
+				return 0, 0
+			}
+			v := (uint32(buf[1]) << 24) | (uint32(buf[2]) << 16) | (uint32(buf[3]) << 8) | uint32(buf[4])
+			return uint64(v), 5
+		}
+		if b == 0x81 {
+			if len(buf) < 9 {
+				return 0, 0
+			}
+			var v uint64
+			v = (uint64(buf[1]) << 56) | (uint64(buf[2]) << 48) | (uint64(buf[3]) << 40) | (uint64(buf[4]) << 32) |
+				(uint64(buf[5]) << 24) | (uint64(buf[6]) << 16) | (uint64(buf[7]) << 8) | uint64(buf[8])
+			return v, 9
+		}
+		// legacy 32-bit case
+		if len(buf) < 5 {
+			return 0, 0
+		}
+		v := (uint32(buf[1]) << 24) | (uint32(buf[2]) << 16) | (uint32(buf[3]) << 8) | uint32(buf[4])
+		return uint64(v), 5
+	}
+	// 0b11 -> encoded string subtype not supported here in length-only context
+	return 0, 0
 }
 
 // readRDBString parses a string-encoded value and returns (string, bytesRead).
 func readRDBString(buf []byte) (string, int) {
-    if len(buf) == 0 { return "", 0 }
-    b := buf[0]
-    top := b >> 6
-    if top == 3 { // special encodings (int/LZF) - support 8/16/32-bit integers
-        t := b & 0x3F
-        switch t {
-        case 0: // 8-bit int
-            if len(buf) < 2 { return "", 0 }
-            return strconv.Itoa(int(int8(buf[1]))), 2
-        case 1: // 16-bit int (LE)
-            if len(buf) < 3 { return "", 0 }
-            v := int16(buf[1]) | int16(buf[2])<<8
-            return strconv.Itoa(int(v)), 3
-        case 2: // 32-bit int (LE)
-            if len(buf) < 5 { return "", 0 }
-            v := int32(buf[1]) | int32(buf[2])<<8 | int32(buf[3])<<16 | int32(buf[4])<<24
-            return strconv.Itoa(int(v)), 5
-        default:
-            return "", 0
-        }
-    }
-    // regular string: length-encoded size followed by bytes
-    ln, n := readRDBLength(buf)
-    if n == 0 { return "", 0 }
-    if len(buf) < n+int(ln) { return "", 0 }
-    return string(buf[n : n+int(ln)]), n + int(ln)
+	if len(buf) == 0 {
+		return "", 0
+	}
+	b := buf[0]
+	top := b >> 6
+	if top == 3 { // special encodings (int/LZF) - support 8/16/32-bit integers
+		t := b & 0x3F
+		switch t {
+		case 0: // 8-bit int
+			if len(buf) < 2 {
+				return "", 0
+			}
+			return strconv.Itoa(int(int8(buf[1]))), 2
+		case 1: // 16-bit int (LE)
+			if len(buf) < 3 {
+				return "", 0
+			}
+			v := int16(buf[1]) | int16(buf[2])<<8
+			return strconv.Itoa(int(v)), 3
+		case 2: // 32-bit int (LE)
+			if len(buf) < 5 {
+				return "", 0
+			}
+			v := int32(buf[1]) | int32(buf[2])<<8 | int32(buf[3])<<16 | int32(buf[4])<<24
+			return strconv.Itoa(int(v)), 5
+		default:
+			return "", 0
+		}
+	}
+	// regular string: length-encoded size followed by bytes
+	ln, n := readRDBLength(buf)
+	if n == 0 {
+		return "", 0
+	}
+	if len(buf) < n+int(ln) {
+		return "", 0
+	}
+	return string(buf[n : n+int(ln)]), n + int(ln)
 }
 
 // propagate sends a parsed RESP command (as captured in parts) to the replica connection, if present.
 // parts holds each RESP line without CRLF, as read by bufio.Scanner. We reconstruct CRLF before writing.
 func (s *Server) propagate(parts []string) {
-    if s == nil || s.role != "master" {
-        return
-    }
-    s.repMu.Lock()
-    defer s.repMu.Unlock()
-    if len(s.replicaConns) == 0 {
-        return
-    }
-    var buf bytes.Buffer
-    for _, line := range parts {
-        buf.WriteString(line)
-        buf.WriteString("\r\n")
-    }
-    payload := buf.Bytes()
-    for _, rc := range s.replicaConns {
-        if rc == nil {
-            continue
-        }
-        _, _ = rc.Write(payload)
-    }
+	if s == nil || s.role != "master" {
+		return
+	}
+	s.repMu.Lock()
+	defer s.repMu.Unlock()
+	if len(s.replicaConns) == 0 {
+		return
+	}
+	var buf bytes.Buffer
+	for _, line := range parts {
+		buf.WriteString(line)
+		buf.WriteString("\r\n")
+	}
+	payload := buf.Bytes()
+	for _, rc := range s.replicaConns {
+		if rc == nil {
+			continue
+		}
+		_, _ = rc.Write(payload)
+	}
 }
 
 // emptyRDB returns a minimal, valid empty RDB payload.
 // This is a hardcoded RDB representing an empty database.
 // The tester accepts any valid empty RDB.
 func emptyRDB() []byte {
-    // This payload corresponds to a minimal empty RDB created by Redis.
-    // Header: "REDIS0006"
-    // EOF opcode and 8-byte checksum follow. This is sufficient for tests.
-    return []byte{
-        0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x30, 0x36, // "REDIS0006"
-        0xFF, // EOF opcode
-        // 8-byte checksum (zeros acceptable for this challenge)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    }
+	// This payload corresponds to a minimal empty RDB created by Redis.
+	// Header: "REDIS0006"
+	// EOF opcode and 8-byte checksum follow. This is sufficient for tests.
+	return []byte{
+		0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x30, 0x36, // "REDIS0006"
+		0xFF, // EOF opcode
+		// 8-byte checksum (zeros acceptable for this challenge)
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
 }
 
 // startReplicaHandshake performs the initial step of the replica->master handshake:
 // send a PING to the configured master. Subsequent steps (REPLCONF/PSYNC) are
 // implemented in later stages.
 func (s *Server) startReplicaHandshake() {
-    addr := net.JoinHostPort(s.masterHost, strconv.Itoa(s.masterPort))
-    conn, err := net.Dial("tcp", addr)
-    if err != nil {
-        fmt.Printf("[replica] failed to connect to master %s: %v\n", addr, err)
-        return
-    }
-    r := bufio.NewReader(conn)
+	addr := net.JoinHostPort(s.masterHost, strconv.Itoa(s.masterPort))
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		fmt.Printf("[replica] failed to connect to master %s: %v\n", addr, err)
+		return
+	}
+	r := bufio.NewReader(conn)
 
-    // RESP-encoded PING: *1\r\n$4\r\nPING\r\n
-    if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
-        fmt.Printf("[replica] failed to send PING to master %s: %v\n", addr, err)
-        _ = conn.Close()
-        return
-    }
-    fmt.Printf("[replica] sent PING to master %s\n", addr)
+	// RESP-encoded PING: *1\r\n$4\r\nPING\r\n
+	if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+		fmt.Printf("[replica] failed to send PING to master %s: %v\n", addr, err)
+		_ = conn.Close()
+		return
+	}
+	fmt.Printf("[replica] sent PING to master %s\n", addr)
 
-    // Read PONG (ignore content, but wait up to 5s)
-    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-    _, _ = r.ReadString('\n')
-    _ = conn.SetReadDeadline(time.Time{})
+	// Read PONG (ignore content, but wait up to 5s)
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _ = r.ReadString('\n')
+	_ = conn.SetReadDeadline(time.Time{})
 
-    // 1) REPLCONF listening-port <PORT>
-    portStr := strconv.Itoa(s.listenPort)
-    replconf1 := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$%d\r\n%s\r\n", len(portStr), portStr)
-    if _, err := conn.Write([]byte(replconf1)); err != nil {
-        fmt.Printf("[replica] failed to send REPLCONF listening-port to %s: %v\n", addr, err)
-        _ = conn.Close()
-        return
-    }
-    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-    _, _ = r.ReadString('\n') // expect +OK
+	// 1) REPLCONF listening-port <PORT>
+	portStr := strconv.Itoa(s.listenPort)
+	replconf1 := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$%d\r\n%s\r\n", len(portStr), portStr)
+	if _, err := conn.Write([]byte(replconf1)); err != nil {
+		fmt.Printf("[replica] failed to send REPLCONF listening-port to %s: %v\n", addr, err)
+		_ = conn.Close()
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _ = r.ReadString('\n') // expect +OK
 
-    // 2) REPLCONF capa psync2
-    replconf2 := "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
-    if _, err := conn.Write([]byte(replconf2)); err != nil {
-        fmt.Printf("[replica] failed to send REPLCONF capa to %s: %v\n", addr, err)
-        _ = conn.Close()
-        return
-    }
-    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-    _, _ = r.ReadString('\n') // expect +OK
-    _ = conn.SetReadDeadline(time.Time{})
+	// 2) REPLCONF capa psync2
+	replconf2 := "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+	if _, err := conn.Write([]byte(replconf2)); err != nil {
+		fmt.Printf("[replica] failed to send REPLCONF capa to %s: %v\n", addr, err)
+		_ = conn.Close()
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _ = r.ReadString('\n') // expect +OK
+	_ = conn.SetReadDeadline(time.Time{})
 
-    // 3) PSYNC ? -1
-    psync := "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
-    if _, err := conn.Write([]byte(psync)); err != nil {
-        fmt.Printf("[replica] failed to send PSYNC to %s: %v\n", addr, err)
-        _ = conn.Close()
-        return
-    }
-    // Read FULLRESYNC line (ignore content for now)
-    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-    _, _ = r.ReadString('\n')
-    _ = conn.SetReadDeadline(time.Time{})
+	// 3) PSYNC ? -1
+	psync := "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+	if _, err := conn.Write([]byte(psync)); err != nil {
+		fmt.Printf("[replica] failed to send PSYNC to %s: %v\n", addr, err)
+		_ = conn.Close()
+		return
+	}
+	// Read FULLRESYNC line (ignore content for now)
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _ = r.ReadString('\n')
+	_ = conn.SetReadDeadline(time.Time{})
 
-    // Read the RDB bulk header: $<len>\r\n
-    header, err := r.ReadString('\n')
-    if err != nil {
-        fmt.Printf("[replica] failed to read RDB header: %v\n", err)
-        _ = conn.Close()
-        return
-    }
-    if !strings.HasPrefix(header, "$") {
-        fmt.Printf("[replica] unexpected RDB header: %q\n", header)
-        _ = conn.Close()
-        return
-    }
-    rdbLen, err := strconv.Atoi(strings.TrimSpace(header[1:]))
-    if err != nil || rdbLen < 0 {
-        fmt.Printf("[replica] invalid RDB length: %v\n", err)
-        _ = conn.Close()
-        return
-    }
-    // Read exactly rdbLen bytes (no trailing CRLF per spec used here)
-    if rdbLen > 0 {
-        buf := make([]byte, rdbLen)
-        if _, err := io.ReadFull(r, buf); err != nil {
-            fmt.Printf("[replica] failed to read RDB bytes: %v\n", err)
-            _ = conn.Close()
-            return
-        }
-    }
+	// Read the RDB bulk header: $<len>\r\n
+	header, err := r.ReadString('\n')
+	if err != nil {
+		fmt.Printf("[replica] failed to read RDB header: %v\n", err)
+		_ = conn.Close()
+		return
+	}
+	if !strings.HasPrefix(header, "$") {
+		fmt.Printf("[replica] unexpected RDB header: %q\n", header)
+		_ = conn.Close()
+		return
+	}
+	rdbLen, err := strconv.Atoi(strings.TrimSpace(header[1:]))
+	if err != nil || rdbLen < 0 {
+		fmt.Printf("[replica] invalid RDB length: %v\n", err)
+		_ = conn.Close()
+		return
+	}
+	// Read exactly rdbLen bytes (no trailing CRLF per spec used here)
+	if rdbLen > 0 {
+		buf := make([]byte, rdbLen)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			fmt.Printf("[replica] failed to read RDB bytes: %v\n", err)
+			_ = conn.Close()
+			return
+		}
+	}
 
-    // Now continuously read commands from master and apply them without replying
-    // Important: reuse the same buffered reader to avoid losing bytes already buffered.
-    scanner2 := bufio.NewScanner(r)
-    var parts2 []string
-    expected2 := 0
-    silentConn := &discardConn{}
-    state := &connState{}
-    for scanner2.Scan() {
-        line := scanner2.Text()
-        if len(parts2) == 0 && strings.HasPrefix(line, "*") {
-            if n, err := strconv.Atoi(line[1:]); err == nil {
-                expected2 = n*2 + 1
-            }
-        }
-        parts2 = append(parts2, line)
-        if expected2 > 0 && len(parts2) == expected2 {
-            // Compute exact byte length of this full command as received over the wire
-            var cmdBytes int
-            for _, ln := range parts2 {
-                cmdBytes += len(ln) + 2 // +2 for CRLF
-            }
-            // Check for REPLCONF GETACK * and reply with ACK <offset>
-            if len(parts2) >= 7 {
-                cmd := strings.ToUpper(parts2[2])
-                if cmd == "REPLCONF" && strings.ToUpper(parts2[4]) == "GETACK" {
-                    // Reply with current processed offset (before counting this GETACK)
-                    ack := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.FormatInt(s.replicaProcessedOffset, 10)), s.replicaProcessedOffset)
-                    _, _ = conn.Write([]byte(ack))
-                    // Now count the GETACK command itself towards processed bytes
-                    s.replicaProcessedOffset += int64(cmdBytes)
-                    parts2 = nil
-                    expected2 = 0
-                    continue
-                }
-            }
-            // Execute other commands silently (no response back to master)
-            s.handleCommand(silentConn, parts2, state)
-            // Count processed command bytes after applying
-            s.replicaProcessedOffset += int64(cmdBytes)
-            parts2 = nil
-            expected2 = 0
-        }
-    }
+	// Now continuously read commands from master and apply them without replying
+	// Important: reuse the same buffered reader to avoid losing bytes already buffered.
+	scanner2 := bufio.NewScanner(r)
+	var parts2 []string
+	expected2 := 0
+	silentConn := &discardConn{}
+	state := &connState{}
+	for scanner2.Scan() {
+		line := scanner2.Text()
+		if len(parts2) == 0 && strings.HasPrefix(line, "*") {
+			if n, err := strconv.Atoi(line[1:]); err == nil {
+				expected2 = n*2 + 1
+			}
+		}
+		parts2 = append(parts2, line)
+		if expected2 > 0 && len(parts2) == expected2 {
+			// Compute exact byte length of this full command as received over the wire
+			var cmdBytes int
+			for _, ln := range parts2 {
+				cmdBytes += len(ln) + 2 // +2 for CRLF
+			}
+			// Check for REPLCONF GETACK * and reply with ACK <offset>
+			if len(parts2) >= 7 {
+				cmd := strings.ToUpper(parts2[2])
+				if cmd == "REPLCONF" && strings.ToUpper(parts2[4]) == "GETACK" {
+					// Reply with current processed offset (before counting this GETACK)
+					ack := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.FormatInt(s.replicaProcessedOffset, 10)), s.replicaProcessedOffset)
+					_, _ = conn.Write([]byte(ack))
+					// Now count the GETACK command itself towards processed bytes
+					s.replicaProcessedOffset += int64(cmdBytes)
+					parts2 = nil
+					expected2 = 0
+					continue
+				}
+			}
+			// Execute other commands silently (no response back to master)
+			s.handleCommand(silentConn, parts2, state)
+			// Count processed command bytes after applying
+			s.replicaProcessedOffset += int64(cmdBytes)
+			parts2 = nil
+			expected2 = 0
+		}
+	}
 }
 
 // connState holds per-connection state such as transaction mode
@@ -410,26 +454,26 @@ type respCaptureConn struct {
 	buf bytes.Buffer
 }
 
-func (c *respCaptureConn) Read(b []byte) (n int, err error)  { return 0, fmt.Errorf("not supported") }
-func (c *respCaptureConn) Write(b []byte) (n int, err error) { return c.buf.Write(b) }
-func (c *respCaptureConn) Close() error                      { return nil }
-func (c *respCaptureConn) LocalAddr() net.Addr               { return &net.IPAddr{} }
-func (c *respCaptureConn) RemoteAddr() net.Addr              { return &net.IPAddr{} }
-func (c *respCaptureConn) SetDeadline(t time.Time) error     { return nil }
-func (c *respCaptureConn) SetReadDeadline(t time.Time) error { return nil }
+func (c *respCaptureConn) Read(b []byte) (n int, err error)   { return 0, fmt.Errorf("not supported") }
+func (c *respCaptureConn) Write(b []byte) (n int, err error)  { return c.buf.Write(b) }
+func (c *respCaptureConn) Close() error                       { return nil }
+func (c *respCaptureConn) LocalAddr() net.Addr                { return &net.IPAddr{} }
+func (c *respCaptureConn) RemoteAddr() net.Addr               { return &net.IPAddr{} }
+func (c *respCaptureConn) SetDeadline(t time.Time) error      { return nil }
+func (c *respCaptureConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *respCaptureConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // discardConn is a net.Conn that discards all writes and doesn't support reads.
 // Used on the replica when executing commands received from master so no response is sent back.
 type discardConn struct{}
 
-func (d *discardConn) Read(b []byte) (n int, err error)  { return 0, fmt.Errorf("not supported") }
-func (d *discardConn) Write(b []byte) (n int, err error) { return len(b), nil }
-func (d *discardConn) Close() error                      { return nil }
-func (d *discardConn) LocalAddr() net.Addr               { return &net.IPAddr{} }
-func (d *discardConn) RemoteAddr() net.Addr              { return &net.IPAddr{} }
-func (d *discardConn) SetDeadline(t time.Time) error     { return nil }
-func (d *discardConn) SetReadDeadline(t time.Time) error { return nil }
+func (d *discardConn) Read(b []byte) (n int, err error)   { return 0, fmt.Errorf("not supported") }
+func (d *discardConn) Write(b []byte) (n int, err error)  { return len(b), nil }
+func (d *discardConn) Close() error                       { return nil }
+func (d *discardConn) LocalAddr() net.Addr                { return &net.IPAddr{} }
+func (d *discardConn) RemoteAddr() net.Addr               { return &net.IPAddr{} }
+func (d *discardConn) SetDeadline(t time.Time) error      { return nil }
+func (d *discardConn) SetReadDeadline(t time.Time) error  { return nil }
 func (d *discardConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // New creates and initializes a new Server instance with a fresh storage backend.
@@ -473,27 +517,27 @@ func (s *Server) SetReplicaOf(host string, port int) {
 //
 // This is a blocking call that runs indefinitely while handling connections.
 func (s *Server) Start(addr string) error {
-    // Remember our listening port for replication handshake
-    if _, p, err := net.SplitHostPort(addr); err == nil {
-        if pi, err := strconv.Atoi(p); err == nil {
-            s.listenPort = pi
-        }
-    }
-    // Load RDB from disk before accepting connections
-    s.loadRDBFromDisk()
+	// Remember our listening port for replication handshake
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		if pi, err := strconv.Atoi(p); err == nil {
+			s.listenPort = pi
+		}
+	}
+	// Load RDB from disk before accepting connections
+	s.loadRDBFromDisk()
 
-    l, err := net.Listen("tcp", addr)
-    if err != nil {
-        return fmt.Errorf("failed to bind to %s: %w", addr, err)
-    }
-    defer l.Close()
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind to %s: %w", addr, err)
+	}
+	defer l.Close()
 
 	fmt.Printf("Server listening on %s\n", addr)
 
-    // If configured as a replica, begin the replication handshake with master.
-    if s.role == "slave" && s.masterHost != "" && s.masterPort != 0 {
-        go s.startReplicaHandshake()
-    }
+	// If configured as a replica, begin the replication handshake with master.
+	if s.role == "slave" && s.masterHost != "" && s.masterPort != 0 {
+		go s.startReplicaHandshake()
+	}
 
 	for {
 		conn, err := l.Accept()
@@ -574,51 +618,42 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 	switch cmd {
 	case "PING":
+		// Basic health check
 		conn.Write([]byte("+PONG\r\n"))
 
 	case "REPLCONF":
-		// Acknowledge REPLCONF commands with OK
-		conn.Write([]byte("+OK\r\n"))
-		// If we are master and this looks like a replica handshake step, register the connection
-		if s.role == "master" && len(parts) >= 5 {
-			arg := strings.ToLower(parts[4])
-			if arg == "listening-port" || arg == "capa" {
-				s.repMu.Lock()
-				already := false
-				for _, rc := range s.replicaConns {
-					if rc == conn {
-						already = true
-						break
+		// Accept replication config hints from replicas. Always respond OK.
+		// Examples: REPLCONF listening-port <port>, REPLCONF capa psync2, REPLCONF ACK <offset>
+		if len(parts) >= 7 {
+			sub := strings.ToLower(parts[4])
+			switch sub {
+			case "listening-port":
+				if len(parts) >= 8 {
+					if p, err := strconv.Atoi(parts[6]); err == nil {
+						s.listenPort = p
 					}
 				}
-				if !already {
-					s.replicaConns = append(s.replicaConns, conn)
-				}
-				s.repMu.Unlock()
+			default:
+				// Ignore other subcommands like capa/ack
 			}
 		}
+		conn.Write([]byte("+OK\r\n"))
 
 	case "PSYNC":
-		// Respond with FULLRESYNC <replid> 0 for initial sync
-		resp := fmt.Sprintf("+FULLRESYNC %s 0\r\n", s.replID)
-		conn.Write([]byte(resp))
-		// Then send an empty RDB file as a bulk string: $<len>\r\n<binary>
+		// Respond with FULLRESYNC and send a minimal empty RDB, then start streaming
+		// subsequent commands to this replica connection.
+		// parts indices: [2]=PSYNC, [4]=replid_from_replica, [6]=offset
+		// We ignore provided replid/offset for this stage and always do FULLRESYNC.
+		full := fmt.Sprintf("+FULLRESYNC %s %d\r\n", s.replID, s.replOffset)
+		conn.Write([]byte(full))
 		rdb := emptyRDB()
+		// Send RDB as a bulk string
 		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
 		conn.Write(rdb)
-		conn.Write([]byte("\r\n")) // RESP bulk strings end with CRLF
-		// Register this connection as a replica so we can propagate writes and count in WAIT
+		conn.Write([]byte("\r\n"))
+		// Register this connection as a replica for propagation
 		s.repMu.Lock()
-		already := false
-		for _, rc := range s.replicaConns {
-			if rc == conn {
-				already = true
-				break
-			}
-		}
-		if !already {
-			s.replicaConns = append(s.replicaConns, conn)
-		}
+		s.replicaConns = append(s.replicaConns, conn)
 		s.repMu.Unlock()
 
 	case "ECHO":
