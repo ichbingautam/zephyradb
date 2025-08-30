@@ -414,47 +414,46 @@ func (s *Server) startReplicaHandshake() {
 
 	// Now continuously read commands from master and apply them without replying
 	// Important: reuse the same buffered reader to avoid losing bytes already buffered.
-	scanner2 := bufio.NewScanner(r)
-	var parts2 []string
-	expected2 := 0
-	silentConn := &discardConn{}
-	state := &connState{}
-	for scanner2.Scan() {
-		line := scanner2.Text()
-		if len(parts2) == 0 && strings.HasPrefix(line, "*") {
-			if n, err := strconv.Atoi(line[1:]); err == nil {
-				expected2 = n*2 + 1
+	go func() {
+		scanner := bufio.NewScanner(r)
+		scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+			if atEOF && len(data) == 0 {
+				return 0, nil, nil
+			}
+
+			// Look for the end of a command (CRLF)
+			if i := bytes.Index(data, []byte("\r\n")); i >= 0 {
+				return i + 2, data[0:i], nil
+			}
+
+			// If we're at EOF, we have a final, non-terminated line. Return it.
+			if atEOF {
+				return len(data), data, nil
+			}
+
+			// Request more data.
+			return 0, nil, nil
+		})
+
+		// Create a silent connection that discards all writes
+		silentConn := &discardConn{}
+		state := &connState{}
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if len(line) == 0 {
+				continue
+			}
+
+			// Process the command
+			parts := strings.Fields(line)
+			if len(parts) > 0 {
+				s.handleCommand(silentConn, parts, state)
 			}
 		}
-		parts2 = append(parts2, line)
-		if expected2 > 0 && len(parts2) == expected2 {
-			// Compute exact byte length of this full command as received over the wire
-			var cmdBytes int
-			for _, ln := range parts2 {
-				cmdBytes += len(ln) + 2 // +2 for CRLF
-			}
-			// Check for REPLCONF GETACK * and reply with ACK <offset>
-			if len(parts2) >= 7 {
-				cmd := strings.ToUpper(parts2[2])
-				if cmd == "REPLCONF" && strings.ToUpper(parts2[4]) == "GETACK" {
-					// Reply with current processed offset (before counting this GETACK)
-					ack := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.FormatInt(s.replicaProcessedOffset, 10)), s.replicaProcessedOffset)
-					_, _ = conn.Write([]byte(ack))
-					// Now count the GETACK command itself towards processed bytes
-					s.replicaProcessedOffset += int64(cmdBytes)
-					parts2 = nil
-					expected2 = 0
-					continue
-				}
-			}
-			// Execute other commands silently (no response back to master)
-			s.handleCommand(silentConn, parts2, state)
-			// Count processed command bytes after applying
-			s.replicaProcessedOffset += int64(cmdBytes)
-			parts2 = nil
-			expected2 = 0
-		}
-	}
+
+		_ = conn.Close()
+	}()
 }
 
 // connState holds per-connection state such as transaction mode
@@ -865,9 +864,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		if len(parts) >= 3 {
 			key := parts[1]
 			value := parts[2]
-			var expiryMs int64
+			expiryMs := int64(0)
 
-			// Handle PX argument
+			// Handle PX option for expiry in milliseconds
 			if len(parts) >= 5 && strings.ToUpper(parts[3]) == "PX" {
 				if ms, err := strconv.ParseInt(parts[4], 10, 64); err == nil {
 					expiryMs = ms
@@ -878,6 +877,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			conn.Write([]byte("+OK\r\n"))
 			// Propagate write to replica
 			s.propagate(parts)
+		} else {
+			conn.Write([]byte("-ERR wrong number of arguments for 'SET' command\r\n"))
 		}
 
 	case "GET":
@@ -889,6 +890,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			} else {
 				conn.Write([]byte("$-1\r\n"))
 			}
+		} else {
+			conn.Write([]byte("-ERR wrong number of arguments for 'GET' command\r\n"))
 		}
 
 	case "INCR":
