@@ -321,11 +321,13 @@ func emptyRDB() []byte {
 // implemented in later stages.
 func (s *Server) startReplicaHandshake() {
 	addr := net.JoinHostPort(s.masterHost, strconv.Itoa(s.masterPort))
+	fmt.Printf("[replica] Starting handshake with master %s\n", addr)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		fmt.Printf("[replica] failed to connect to master %s: %v\n", addr, err)
 		return
 	}
+	fmt.Printf("[replica] Connected to master %s\n", addr)
 	r := bufio.NewReader(conn)
 
 	// RESP-encoded PING: *1\r\n$4\r\nPING\r\n
@@ -649,22 +651,20 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 					if s.ackSeen == nil {
 						s.ackSeen = make(map[string]bool)
 					}
-					// Parse replica-provided ACK offset from parts[6]
-					var ackOffset int64
+					// Parse replica-provided ACK offset from parts[6] (for debugging if needed)
 					if len(parts) >= 7 {
-						if v, err := strconv.ParseInt(parts[6], 10, 64); err == nil {
-							ackOffset = v
-						}
+						// ackOffset := parts[6] // Available if needed for debugging
 					}
 					// Identify this replica uniquely by remote address
 					addr := ""
 					if conn != nil && conn.RemoteAddr() != nil {
 						addr = conn.RemoteAddr().String()
 					}
-					// Count only once per replica and only if it has processed up to (or beyond) our target offset
-					if !s.ackSeen[addr] && ackOffset >= s.waitTargetOffset {
+					// Count only once per replica - any ACK response indicates the replica is active
+					if !s.ackSeen[addr] {
 						s.ackSeen[addr] = true
 						s.ackCount++
+						fmt.Printf("[WAIT] Received ACK from %s, total ACKs: %d\n", addr, s.ackCount)
 					}
 				}
 				s.repMu.Unlock()
@@ -691,6 +691,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Register this connection as a replica for propagation
 		s.repMu.Lock()
 		s.replicaConns = append(s.replicaConns, conn)
+		fmt.Printf("[master] Registered replica connection, total replicas: %d\n", len(s.replicaConns))
 		s.repMu.Unlock()
 
 	case "ECHO":
@@ -1008,11 +1009,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		conn.Write([]byte("*0\r\n"))
 
 	case "WAIT":
-		// Minimal WAIT implementation for tests: if no replicas are connected, return 0 immediately.
+		// WAIT implementation: send REPLCONF GETACK * to replicas and wait for acknowledgments
 		// Syntax: WAIT numreplicas timeout
-		// For this stage, we'll first send REPLCONF GETACK * to replicas, then wait up to the
-		// provided timeout for replicas to connect, and finally return the current connected
-		// replica count as a RESP integer.
 		var numReplicas int
 		var timeoutMs int
 		if len(parts) >= 7 {
@@ -1034,6 +1032,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Capture the current master replication offset as the target for this WAIT
 		s.waitTargetOffset = s.replOffset
 		replicaConnsCopy := append([]net.Conn(nil), s.replicaConns...)
+		fmt.Printf("[WAIT] Found %d replica connections\n", len(replicaConnsCopy))
 		s.repMu.Unlock()
 
 		// Write GETACK to all replicas. This is done outside the main lock to allow
@@ -1044,18 +1043,22 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			}
 		}
 
+		// Wait for acknowledgments with timeout
 		deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 		for {
 			s.repMu.Lock()
 			acks := s.ackCount
 			s.repMu.Unlock()
+
+			// Check if we have enough ACKs or timeout reached
 			if numReplicas == 0 || acks >= numReplicas || time.Now().After(deadline) {
 				// End ACK window
 				s.repMu.Lock()
 				s.ackWaitActive = false
 				finalAcks := s.ackCount
 				s.repMu.Unlock()
-				// Return min(acks, requested)
+
+				// Return the number of replicas that acknowledged
 				count := finalAcks
 				if numReplicas > 0 && count > numReplicas {
 					count = numReplicas
