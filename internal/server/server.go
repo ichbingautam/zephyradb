@@ -124,8 +124,8 @@ func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
 			max = mid
 		}
 	}
-	// Return the midpoint of the final interval to minimize bias
-	return (min + max) / 2
+	// Return the lower bound of the final interval to match reference decoding
+	return min
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
