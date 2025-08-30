@@ -1400,6 +1400,17 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			s.propagate(parts)
 		}
 
+	case "GEOADD":
+		// Minimal implementation for this stage: just return count of (lon,lat,member) triplets.
+		// Syntax: GEOADD key lon lat member [lon lat member ...]
+		added := 0
+		if len(parts) > 2 {
+			added = (len(parts) - 2) / 3
+		}
+		conn.Write([]byte(fmt.Sprintf(":%d\r\n", added)))
+		// Propagate write to replica
+		s.propagate(parts)
+
 	case "TYPE":
 		if len(parts) == 2 {
 			key := parts[1]
