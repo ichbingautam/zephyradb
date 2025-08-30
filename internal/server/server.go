@@ -32,6 +32,8 @@ type Server struct {
 // connState holds per-connection state such as transaction mode
 type connState struct {
 	inMulti bool
+	// queue holds RESP command parts queued during a MULTI transaction
+	queue [][]string
 }
 
 // New creates and initializes a new Server instance with a fresh storage backend.
@@ -126,6 +128,24 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	cmdIdx := 2
 	cmd := strings.ToUpper(parts[cmdIdx])
 
+	// If we're in a MULTI transaction, queue all commands except transaction controls
+	if state.inMulti {
+		switch cmd {
+		case "MULTI":
+			// Redis errors on nested MULTI, but for this stage we'll just acknowledge current MULTI state
+			// and return OK again (keeps behavior simple). Alternatively, we could return an error.
+			conn.Write([]byte("+OK\r\n"))
+			return
+		case "EXEC":
+			// Allow EXEC to be handled below
+		default:
+			// Queue the command without executing it and acknowledge with QUEUED
+			state.queue = append(state.queue, append([]string(nil), parts...))
+			conn.Write([]byte("+QUEUED\r\n"))
+			return
+		}
+	}
+
 	switch cmd {
 	case "PING":
 		conn.Write([]byte("+PONG\r\n"))
@@ -138,8 +158,9 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "MULTI":
-		// Start a transaction
+		// Start a transaction and reset any previous queue
 		state.inMulti = true
+		state.queue = nil
 		conn.Write([]byte("+OK\r\n"))
 
 	case "EXEC":
@@ -148,8 +169,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
 			return
 		}
-		// Empty transaction for now: return empty array and exit MULTI state
+		// For this stage, do not execute queued commands yet. Clear state and
+		// return an empty array to indicate an empty transaction.
 		state.inMulti = false
+		state.queue = nil
 		conn.Write([]byte("*0\r\n"))
 
 	case "SET":
