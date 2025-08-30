@@ -412,48 +412,146 @@ func (s *Server) startReplicaHandshake() {
 		}
 	}
 
-	// Now continuously read commands from master and apply them without replying
-	// Important: reuse the same buffered reader to avoid losing bytes already buffered.
-	go func() {
-		scanner := bufio.NewScanner(r)
-		scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-			if atEOF && len(data) == 0 {
-				return 0, nil, nil
-			}
+	// Now continuously read commands from master and apply them. We must not
+    // reply for most commands, except we need to handle REPLCONF GETACK * by
+    // replying with REPLCONF ACK <offset> to the master.
+    // Important: reuse the same buffered reader to avoid losing bytes already buffered.
+    go func() {
+        // Helper functions to parse RESP from the master connection
+        readLine := func() (string, error) {
+            line, err := r.ReadString('\n')
+            if err != nil {
+                return "", err
+            }
+            return line, nil
+        }
 
-			// Look for the end of a command (CRLF)
-			if i := bytes.Index(data, []byte("\r\n")); i >= 0 {
-				return i + 2, data[0:i], nil
-			}
+        readBulkString := func() (string, error) {
+            // Expect a line like $<len>\r\n
+            hdr, err := readLine()
+            if err != nil {
+                return "", err
+            }
+            if !strings.HasPrefix(hdr, "$") {
+                return "", fmt.Errorf("expected bulk string header, got: %q", hdr)
+            }
+            lnStr := strings.TrimSuffix(hdr[1:], "\r\n")
+            ln, err := strconv.Atoi(lnStr)
+            if err != nil {
+                return "", fmt.Errorf("invalid bulk length: %v", err)
+            }
+            if ln == -1 {
+                // null bulk
+                return "", nil
+            }
+            buf := make([]byte, ln)
+            if _, err := io.ReadFull(r, buf); err != nil {
+                return "", err
+            }
+            // trailing CRLF
+            crlf := make([]byte, 2)
+            if _, err := io.ReadFull(r, crlf); err != nil {
+                return "", err
+            }
+            return string(buf), nil
+        }
 
-			// If we're at EOF, we have a final, non-terminated line. Return it.
-			if atEOF {
-				return len(data), data, nil
-			}
+        // A silent connection for executing replicated commands without replying
+        silentConn := &discardConn{}
+        state := &connState{}
 
-			// Request more data.
-			return 0, nil, nil
-		})
+        for {
+            // Read first byte for RESP type
+            b, err := r.ReadByte()
+            if err != nil {
+                if err != io.EOF {
+                    fmt.Printf("[replica] read error: %v\n", err)
+                }
+                break
+            }
+            if b != '*' {
+                // Skip lines we don't expect
+                if _, err := r.ReadString('\n'); err != nil {
+                    break
+                }
+                continue
+            }
+            // Read array size
+            sizeLine, err := readLine()
+            if err != nil {
+                fmt.Printf("[replica] error reading array size: %v\n", err)
+                break
+            }
+            sizeStr := strings.TrimSuffix(sizeLine, "\r\n")
+            n, err := strconv.Atoi(sizeStr)
+            if err != nil {
+                fmt.Printf("[replica] invalid array size: %v\n", err)
+                break
+            }
 
-		// Create a silent connection that discards all writes
-		silentConn := &discardConn{}
-		state := &connState{}
+            // Parse n bulk string elements
+            parts := make([]string, 0, n)
+            for i := 0; i < n; i++ {
+                // Expect bulk string for each argument
+                // We already consumed no extra byte here, so readBulkString will read the '$' header itself
+                // Ensure next byte is '$'
+                pb, err := r.ReadByte()
+                if err != nil {
+                    fmt.Printf("[replica] error reading bulk marker: %v\n", err)
+                    return
+                }
+                if pb != '$' {
+                    // Put back if possible is not trivial; treat as error
+                    fmt.Printf("[replica] expected '$' for bulk, got %q\n", pb)
+                    return
+                }
+                // Unread to let readBulkString parse header
+                if err := r.UnreadByte(); err != nil {
+                    fmt.Printf("[replica] unread error: %v\n", err)
+                    return
+                }
+                arg, err := readBulkString()
+                if err != nil {
+                    fmt.Printf("[replica] error reading bulk string: %v\n", err)
+                    return
+                }
+                parts = append(parts, arg)
+            }
 
-		for scanner.Scan() {
-			line := scanner.Text()
-			if len(line) == 0 {
-				continue
-			}
+            if len(parts) == 0 {
+                continue
+            }
 
-			// Process the command
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				s.handleCommand(silentConn, parts, state)
-			}
-		}
+            // Compute payload length (bytes read for this command) to advance processed offset
+            var pl bytes.Buffer
+            pl.WriteString(fmt.Sprintf("*%d\r\n", len(parts)))
+            for _, p := range parts {
+                pl.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(p), p))
+            }
+            payloadLen := int64(pl.Len())
 
-		_ = conn.Close()
-	}()
+            // Update processed offset
+            s.repMu.Lock()
+            s.replicaProcessedOffset += payloadLen
+            processed := s.replicaProcessedOffset
+            s.repMu.Unlock()
+
+            // Handle REPLCONF GETACK *: reply to master with our processed offset
+            if strings.ToUpper(parts[0]) == "REPLCONF" && len(parts) >= 3 && strings.ToUpper(parts[1]) == "GETACK" && parts[2] == "*" {
+                offStr := strconv.FormatInt(processed, 10)
+                resp := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offStr), offStr)
+                if _, err := conn.Write([]byte(resp)); err != nil {
+                    fmt.Printf("[replica] failed to send ACK: %v\n", err)
+                }
+                continue
+            }
+
+            // For all other commands from master: apply them locally without responding
+            s.handleCommand(silentConn, parts, state)
+        }
+
+        _ = conn.Close()
+    }()
 }
 
 // connState holds per-connection state such as transaction mode
