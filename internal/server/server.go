@@ -1488,6 +1488,21 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             conn.Write([]byte("-ERR wrong number of arguments for 'ZCARD' command\r\n"))
         }
 
+    case "ZSCORE":
+        // ZSCORE key member -> bulk string score or null bulk if missing
+        if len(parts) == 3 {
+            key := parts[1]
+            member := parts[2]
+            if sc, ok := s.store.ZScore(key, member); ok {
+                sStr := strconv.FormatFloat(sc, 'f', -1, 64)
+                conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(sStr), sStr)))
+            } else {
+                conn.Write([]byte("$-1\r\n"))
+            }
+        } else {
+            conn.Write([]byte("-ERR wrong number of arguments for 'ZSCORE' command\r\n"))
+        }
+
 	case "INFO":
 		// Support: INFO replication -> returns bulk string with replication section
 		if len(parts) >= 2 && strings.ToLower(parts[1]) == "replication" {

@@ -14,6 +14,24 @@ type ZSet struct {
     scores map[string]float64
 }
 
+// ZScore returns the score of a member in the sorted set at key.
+// Returns (0, false) if key/member are missing or wrong type.
+func (s *Store) ZScore(key, member string) (float64, bool) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+
+    entry, exists := s.data[key]
+    if !exists || entry.Type != types.TypeZSet {
+        return 0, false
+    }
+    zs, _ := entry.Value.(*ZSet)
+    sc, ok := zs.scores[member]
+    if !ok {
+        return 0, false
+    }
+    return sc, true
+}
+
 // ZCard returns the cardinality of the sorted set stored at key.
 // Returns 0 if the key doesn't exist or doesn't hold a zset.
 func (s *Store) ZCard(key string) int64 {
