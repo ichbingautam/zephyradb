@@ -533,31 +533,30 @@ func (s *Server) startReplicaHandshake() {
             }
             payloadLen := int64(pl.Len())
 
-            // Only advance processed offset for actual replicated commands (not REPLCONF)
-            var processed int64
-            if cmd != "REPLCONF" {
-                s.repMu.Lock()
-                s.replicaProcessedOffset += payloadLen
-                processed = s.replicaProcessedOffset
-                s.repMu.Unlock()
-            } else {
-                s.repMu.Lock()
-                processed = s.replicaProcessedOffset
-                s.repMu.Unlock()
-            }
+            // Read current processed offset once
+            s.repMu.Lock()
+            currentProcessed := s.replicaProcessedOffset
+            s.repMu.Unlock()
 
-            // Handle REPLCONF GETACK *: reply to master with our processed offset
+            // Handle REPLCONF GETACK *: reply to master with the PRE-INCREMENT offset
             if cmd == "REPLCONF" && len(parts) >= 3 && strings.ToUpper(parts[1]) == "GETACK" && parts[2] == "*" {
-                offStr := strconv.FormatInt(processed, 10)
+                offStr := strconv.FormatInt(currentProcessed, 10)
                 resp := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offStr), offStr)
                 if _, err := conn.Write([]byte(resp)); err != nil {
                     fmt.Printf("[replica] failed to send ACK: %v\n", err)
                 }
+                // After replying, count the bytes of this GETACK request into the processed offset
+                s.repMu.Lock()
+                s.replicaProcessedOffset += payloadLen
+                s.repMu.Unlock()
                 continue
             }
 
-            // For all other commands from master: apply them locally without responding
+            // For all other commands: execute silently, then count their bytes toward processed offset
             s.handleCommand(silentConn, parts, state)
+            s.repMu.Lock()
+            s.replicaProcessedOffset += payloadLen
+            s.repMu.Unlock()
         }
 
         _ = conn.Close()
