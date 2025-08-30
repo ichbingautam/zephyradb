@@ -1401,14 +1401,35 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		}
 
 	case "GEOADD":
-		// Minimal implementation for this stage: just return count of (lon,lat,member) triplets.
+		// Validate longitude/latitude and return count. No storage yet.
 		// Syntax: GEOADD key lon lat member [lon lat member ...]
 		added := 0
 		if len(parts) > 2 {
 			added = (len(parts) - 2) / 3
 		}
+		// Validate each pair; if any invalid, return error and do not propagate
+		lonMin, lonMax := -180.0, 180.0
+		latMin, latMax := -85.05112878, 85.05112878
+		for i := 0; i < added; i++ {
+			lonStr := parts[2+i*3]
+			latStr := parts[3+i*3]
+			lon, errLon := strconv.ParseFloat(lonStr, 64)
+			lat, errLat := strconv.ParseFloat(latStr, 64)
+			if errLon != nil || errLat != nil {
+				// Return an error with the raw strings if parsing fails
+				errMsg := fmt.Sprintf("-ERR invalid longitude,latitude pair %s,%s\r\n", lonStr, latStr)
+				conn.Write([]byte(errMsg))
+				return
+			}
+			if lon < lonMin || lon > lonMax || lat < latMin || lat > latMax {
+				// Format with 6 decimals similar to Redis examples
+				errMsg := fmt.Sprintf("-ERR invalid longitude,latitude pair %.6f,%.6f\r\n", lon, lat)
+				conn.Write([]byte(errMsg))
+				return
+			}
+		}
 		conn.Write([]byte(fmt.Sprintf(":%d\r\n", added)))
-		// Propagate write to replica
+		// Propagate write to replica only on success
 		s.propagate(parts)
 
 	case "TYPE":
