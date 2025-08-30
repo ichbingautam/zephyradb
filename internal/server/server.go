@@ -650,7 +650,6 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Send RDB as a bulk string
 		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
 		conn.Write(rdb)
-		conn.Write([]byte("\r\n"))
 		// Register this connection as a replica for propagation
 		s.repMu.Lock()
 		s.replicaConns = append(s.replicaConns, conn)
