@@ -273,30 +273,38 @@ func readRDBString(buf []byte) (string, int) {
 	return string(buf[n : n+int(ln)]), n + int(ln)
 }
 
-// propagate sends a parsed RESP command (as captured in parts) to the replica connection, if present.
-// parts holds each RESP line without CRLF, as read by bufio.Scanner. We reconstruct CRLF before writing.
+// propagate sends a parsed command to all replica connections in RESP array format
 func (s *Server) propagate(parts []string) {
-	if s == nil || s.role != "master" {
+	if s == nil || s.role != "master" || len(parts) == 0 {
 		return
 	}
+
 	s.repMu.Lock()
 	defer s.repMu.Unlock()
+
 	if len(s.replicaConns) == 0 {
 		return
 	}
+
+	// Build RESP array: *<n>
 	var buf bytes.Buffer
-	for _, line := range parts {
-		buf.WriteString(line)
-		buf.WriteString("\r\n")
+	buf.WriteString(fmt.Sprintf("*%d\r\n", len(parts)))
+
+	// Add each argument as a bulk string: $<len>
+	for _, part := range parts {
+		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(part), part))
 	}
+
 	payload := buf.Bytes()
+
+	// Send to all replicas
 	for _, rc := range s.replicaConns {
-		if rc == nil {
-			continue
+		if rc != nil {
+			_, _ = rc.Write(payload)
 		}
-		_, _ = rc.Write(payload)
 	}
-	// Update master's global replication offset by the bytes written for this command
+
+	// Update replication offset
 	s.replOffset += int64(len(payload))
 }
 
