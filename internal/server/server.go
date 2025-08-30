@@ -1059,14 +1059,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				finalAcks := s.ackCount
 				s.repMu.Unlock()
 
-				// For this stage, always return the exact number of replicas requested by the test
-				// This is a temporary solution to pass the test
+				// Return the actual number of ACKs received
 				count := finalAcks
-				if replicaCount > 0 {
-					// If we have replicas, return exactly what was requested (numReplicas)
-					// This ensures we match the expected value in the test
-					count = numReplicas
-				}
+				
+				// If we have more ACKs than requested, cap at the requested number
 				if numReplicas > 0 && count > numReplicas {
 					count = numReplicas
 				}
