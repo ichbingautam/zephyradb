@@ -51,6 +51,8 @@ type Server struct {
 	ackWaitActive bool
 	ackCount      int
 	ackSeen       map[string]bool
+	// waitTargetOffset is the master replication offset that WAIT is targeting
+	waitTargetOffset int64
 	// replicaProcessedOffset tracks bytes of commands processed by this replica over the replication connection
 	replicaProcessedOffset int64
 	// RDB-related configuration
@@ -295,6 +297,10 @@ func (s *Server) propagate(parts []string) {
 		}
 		_, _ = rc.Write(payload)
 	}
+	// Update master's global replication offset by the bytes written for this command
+	s.repMu.Lock()
+	s.replOffset += int64(len(payload))
+	s.repMu.Unlock()
 }
 
 // emptyRDB returns a minimal, valid empty RDB payload.
@@ -645,11 +651,20 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 					if s.ackSeen == nil {
 						s.ackSeen = make(map[string]bool)
 					}
+					// Parse replica-provided ACK offset from parts[6]
+					var ackOffset int64
+					if len(parts) >= 7 {
+						if v, err := strconv.ParseInt(parts[6], 10, 64); err == nil {
+							ackOffset = v
+						}
+					}
+					// Identify this replica uniquely by remote address
 					addr := ""
 					if conn != nil && conn.RemoteAddr() != nil {
 						addr = conn.RemoteAddr().String()
 					}
-					if !s.ackSeen[addr] {
+					// Count only once per replica and only if it has processed up to (or beyond) our target offset
+					if !s.ackSeen[addr] && ackOffset >= s.waitTargetOffset {
 						s.ackSeen[addr] = true
 						s.ackCount++
 					}
@@ -1006,6 +1021,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s.ackWaitActive = true
 		s.ackCount = 0
 		s.ackSeen = make(map[string]bool)
+		// Capture the current master replication offset as the target for this WAIT
+		s.waitTargetOffset = s.replOffset
 		conns := append([]net.Conn(nil), s.replicaConns...)
 		s.repMu.Unlock()
 		for _, rc := range conns {
