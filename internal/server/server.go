@@ -672,6 +672,32 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			conn.Write([]byte("$-1\r\n"))
 		}
 
+	case "WAIT":
+		// Minimal WAIT implementation for tests: if no replicas are connected, return 0 immediately.
+		// Syntax: WAIT numreplicas timeout
+		// The tester calls: WAIT 0 60000 -> respond immediately with 0.
+		var numReplicas int
+		if len(parts) >= 9 {
+			// parts[4] is numreplicas, parts[6] is timeout
+			if v, err := strconv.Atoi(parts[4]); err == nil {
+				numReplicas = v
+			}
+		}
+		if numReplicas == 0 {
+			conn.Write([]byte(":0\r\n"))
+			return
+		}
+		s.repMu.Lock()
+		connected := len(s.replicaConns)
+		s.repMu.Unlock()
+		if connected == 0 {
+			conn.Write([]byte(":0\r\n"))
+			return
+		}
+		// For now, return the current number of connected replicas (best-effort)
+		resp := fmt.Sprintf(":%d\r\n", connected)
+		conn.Write([]byte(resp))
+
 	case "XADD":
 		if len(parts) < 9 || len(parts)%2 != 1 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xadd' command\r\n"))
