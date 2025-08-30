@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +49,179 @@ type Server struct {
 	repMu sync.Mutex
 	// replicaProcessedOffset tracks bytes of commands processed by this replica over the replication connection
 	replicaProcessedOffset int64
+	// RDB-related configuration
+	configDir        string
+	configDBFilename string
+}
+
+// SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
+func (s *Server) SetRDBConfig(dir, filename string) {
+    if dir != "" {
+        s.configDir = dir
+    }
+    if filename != "" {
+        s.configDBFilename = filename
+    }
+}
+
+// loadRDBFromDisk loads a minimal RDB (version 11) containing up to a single string key.
+// If the file does not exist or parsing fails, it returns silently leaving the store empty.
+func (s *Server) loadRDBFromDisk() {
+    path := filepath.Join(s.configDir, s.configDBFilename)
+    f, err := os.Open(path)
+    if err != nil {
+        return
+    }
+    defer f.Close()
+    data, err := io.ReadAll(f)
+    if err != nil || len(data) < 9 {
+        return
+    }
+    // Header: "REDIS" + 4-digit version
+    if !bytes.HasPrefix(data, []byte("REDIS")) {
+        return
+    }
+    // Minimal scan for database section: look for 0xFE (DB start) then optional 0xFB sizes, then entries
+    i := 9 // after header
+    // skip metadata subsections starting with 0xFA
+    for i < len(data) && data[i] == 0xFA {
+        i++
+        // read name (string-encoded)
+        name, n := readRDBString(data[i:])
+        if n == 0 { return }
+        i += n
+        // read value (string-encoded)
+        _, n = readRDBString(data[i:])
+        if n == 0 { return }
+        i += n
+        _ = name // unused
+    }
+    if i >= len(data) || data[i] != 0xFE { // DB start
+        return
+    }
+    i++
+    // DB index (length-encoded), skip
+    _, n := readRDBLength(data[i:])
+    if n == 0 { return }
+    i += n
+    // Optional 0xFB -> sizes
+    if i < len(data) && data[i] == 0xFB {
+        i++
+        if _, n = readRDBLength(data[i:]); n == 0 { return }
+        i += n
+        if _, n = readRDBLength(data[i:]); n == 0 { return }
+        i += n
+    }
+    // Now entries until 0xFF
+    var expiresAtMs int64
+    for i < len(data) && data[i] != 0xFF {
+        if data[i] == 0xFC { // expire in ms
+            if i+9 > len(data) { return }
+            // little-endian uint64
+            var v uint64
+            for b:=0; b<8; b++ { v |= uint64(data[i+1+b]) << (8*b) }
+            expiresAtMs = int64(v)
+            i += 9
+            continue
+        }
+        if data[i] == 0xFD { // expire in seconds
+            if i+5 > len(data) { return }
+            var v uint32
+            for b:=0; b<4; b++ { v |= uint32(data[i+1+b]) << (8*b) }
+            expiresAtMs = int64(v) * 1000
+            i += 5
+            continue
+        }
+        valueType := data[i]
+        i++
+        if valueType != 0x00 { // only string supported
+            return
+        }
+        key, n := readRDBString(data[i:])
+        if n == 0 { return }
+        i += n
+        val, n := readRDBString(data[i:])
+        if n == 0 { return }
+        i += n
+        // set into store, honoring expiry if in future
+        var ttlMs int64
+        if expiresAtMs > 0 {
+            now := time.Now().UnixMilli()
+            if expiresAtMs <= now {
+                // expired, skip load
+                break
+            }
+            ttlMs = expiresAtMs - now
+        }
+        s.store.Set(key, val, ttlMs)
+        // Only single key needed for this stage
+        break
+    }
+}
+
+// readRDBLength parses the length-encoded integer and returns (value, bytesRead).
+func readRDBLength(buf []byte) (uint64, int) {
+    if len(buf) == 0 { return 0, 0 }
+    b := buf[0]
+    top := b >> 6
+    if top == 0 { // 6-bit
+        return uint64(b & 0x3F), 1
+    }
+    if top == 1 { // 14-bit big-endian across next byte
+        if len(buf) < 2 { return 0, 0 }
+        v := (uint16(b&0x3F) << 8) | uint16(buf[1])
+        return uint64(v), 2
+    }
+    if top == 2 { // special: check for 32/64-bit lengths
+        if b == 0x80 {
+            if len(buf) < 5 { return 0, 0 }
+            v := (uint32(buf[1])<<24)|(uint32(buf[2])<<16)|(uint32(buf[3])<<8)|uint32(buf[4])
+            return uint64(v), 5
+        }
+        if b == 0x81 {
+            if len(buf) < 9 { return 0, 0 }
+            var v uint64
+            v = (uint64(buf[1])<<56)|(uint64(buf[2])<<48)|(uint64(buf[3])<<40)|(uint64(buf[4])<<32)|
+                (uint64(buf[5])<<24)|(uint64(buf[6])<<16)|(uint64(buf[7])<<8)|uint64(buf[8])
+            return v, 9
+        }
+        // legacy 32-bit case
+        if len(buf) < 5 { return 0, 0 }
+        v := (uint32(buf[1])<<24)|(uint32(buf[2])<<16)|(uint32(buf[3])<<8)|uint32(buf[4])
+        return uint64(v), 5
+    }
+    // 0b11 -> encoded string subtype not supported here in length-only context
+    return 0, 0
+}
+
+// readRDBString parses a string-encoded value and returns (string, bytesRead).
+func readRDBString(buf []byte) (string, int) {
+    if len(buf) == 0 { return "", 0 }
+    b := buf[0]
+    top := b >> 6
+    if top == 3 { // special encodings (int/LZF) - support 8/16/32-bit integers
+        t := b & 0x3F
+        switch t {
+        case 0: // 8-bit int
+            if len(buf) < 2 { return "", 0 }
+            return strconv.Itoa(int(int8(buf[1]))), 2
+        case 1: // 16-bit int (LE)
+            if len(buf) < 3 { return "", 0 }
+            v := int16(buf[1]) | int16(buf[2])<<8
+            return strconv.Itoa(int(v)), 3
+        case 2: // 32-bit int (LE)
+            if len(buf) < 5 { return "", 0 }
+            v := int32(buf[1]) | int32(buf[2])<<8 | int32(buf[3])<<16 | int32(buf[4])<<24
+            return strconv.Itoa(int(v)), 5
+        default:
+            return "", 0
+        }
+    }
+    // regular string: length-encoded size followed by bytes
+    ln, n := readRDBLength(buf)
+    if n == 0 { return "", 0 }
+    if len(buf) < n+int(ln) { return "", 0 }
+    return string(buf[n : n+int(ln)]), n + int(ln)
 }
 
 // propagate sends a parsed RESP command (as captured in parts) to the replica connection, if present.
@@ -270,6 +445,9 @@ func New() *Server {
 		// Hardcode a 40-char pseudo random string as replication ID for this stage
 		replID:     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
 		replOffset: 0,
+		// RDB defaults
+		configDir:        ".",
+		configDBFilename: "dump.rdb",
 	}
 }
 
@@ -301,6 +479,9 @@ func (s *Server) Start(addr string) error {
             s.listenPort = pi
         }
     }
+    // Load RDB from disk before accepting connections
+    s.loadRDBFromDisk()
+
     l, err := net.Listen("tcp", addr)
     if err != nil {
         return fmt.Errorf("failed to bind to %s: %w", addr, err)
@@ -700,6 +881,47 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			// For other sections or missing arg, return a null bulk string
 			conn.Write([]byte("$-1\r\n"))
 		}
+
+	case "CONFIG":
+		// Handle: CONFIG GET <key>
+		if len(parts) >= 7 && strings.ToUpper(parts[4]) == "GET" {
+			key := strings.ToLower(parts[6])
+			switch key {
+			case "dir":
+				k := "dir"
+				v := s.configDir
+				resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v)
+				conn.Write([]byte(resp))
+				return
+			case "dbfilename":
+				k := "dbfilename"
+				v := s.configDBFilename
+				resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(k), k, len(v), v)
+				conn.Write([]byte(resp))
+				return
+			default:
+				// Unknown key -> empty array
+				conn.Write([]byte("*0\r\n"))
+				return
+			}
+		}
+		// Unsupported CONFIG subcommand for now
+		conn.Write([]byte("-ERR Unsupported CONFIG subcommand\r\n"))
+
+	case "KEYS":
+		// Only support pattern "*"
+		if len(parts) >= 5 && parts[4] == "*" {
+			keys := s.store.KeysAll()
+			// Build RESP array
+			var buf bytes.Buffer
+			buf.WriteString(fmt.Sprintf("*%d\r\n", len(keys)))
+			for _, k := range keys {
+				buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(k), k))
+			}
+			conn.Write(buf.Bytes())
+			return
+		}
+		conn.Write([]byte("*0\r\n"))
 
 	case "WAIT":
 		// Minimal WAIT implementation for tests: if no replicas are connected, return 0 immediately.

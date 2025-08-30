@@ -47,6 +47,22 @@ func New() *Store {
 	}
 }
 
+// KeysAll returns all non-expired keys currently in the store.
+func (s *Store) KeysAll() []string {
+	nowMs := time.Now().UnixMilli()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.data))
+	for k, e := range s.data {
+		if e.ExpiresAt > 0 && nowMs > e.ExpiresAt {
+			delete(s.data, k)
+			continue
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // Set stores or updates a string value with optional expiry.
 // Parameters:
 //   - key: The key under which to store the value
