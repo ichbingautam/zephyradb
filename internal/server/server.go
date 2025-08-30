@@ -659,6 +659,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 					return
 				}
 
+				// Special case: if length is -1, it's a null bulk string
+				if length == -1 {
+					parts = append(parts, "")
+					continue
+				}
+
 				// Read the actual string data
 				data := make([]byte, length)
 				_, err = io.ReadFull(reader, data)
