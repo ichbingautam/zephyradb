@@ -1,16 +1,22 @@
 package main
 
 import (
-	"fmt"
-	"os"
+    "flag"
+    "fmt"
+    "os"
 
-	"github.com/codecrafters-io/redis-starter-go/internal/server"
+    "github.com/codecrafters-io/redis-starter-go/internal/server"
 )
 
 func main() {
-	srv := server.New()
-	if err := srv.Start("0.0.0.0:6379"); err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(1)
-	}
+    // Parse --port flag (default 6379)
+    port := flag.Int("port", 6379, "port to listen on")
+    flag.Parse()
+
+    addr := fmt.Sprintf("0.0.0.0:%d", *port)
+    srv := server.New()
+    if err := srv.Start(addr); err != nil {
+        fmt.Println("Error:", err)
+        os.Exit(1)
+    }
 }
