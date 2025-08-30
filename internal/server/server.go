@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -623,6 +624,51 @@ func New() *Server {
         channelSubs:      make(map[string]int),
         subConns:         make(map[string]map[net.Conn]bool),
     }
+}
+
+// --- GEO helpers: convert (lon, lat) to 52-bit interleaved geohash score ---
+const (
+    geoLonMin = -180.0
+    geoLonMax = 180.0
+    geoLatMin = -85.05112878
+    geoLatMax = 85.05112878
+    geoStep   = 26 // bits per coordinate
+)
+
+func geoScoreFromLonLat(lon, lat float64) float64 {
+    lonBits := coordToBits(lon, geoLonMin, geoLonMax, geoStep)
+    latBits := coordToBits(lat, geoLatMin, geoLatMax, geoStep)
+    inter := interleaveBits(lonBits, latBits)
+    return float64(inter)
+}
+
+func coordToBits(val, min, max float64, step uint) uint64 {
+    if val < min {
+        val = min
+    }
+    if val > max {
+        val = max
+    }
+    // normalize to [0,1]
+    scale := (val - min) / (max - min)
+    maxBits := (1 << step) - 1
+    // round to nearest integer to spread evenly
+    return uint64(math.Floor(scale*float64(maxBits) + 0.5))
+}
+
+func interleaveBits(x, y uint64) uint64 {
+    // expand to interleaved form
+    x = (x | (x << 16)) & 0x0000FFFF0000FFFF
+    x = (x | (x << 8)) & 0x00FF00FF00FF00FF
+    x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F
+    x = (x | (x << 2)) & 0x3333333333333333
+    x = (x | (x << 1)) & 0x5555555555555555
+    y = (y | (y << 16)) & 0x0000FFFF0000FFFF
+    y = (y | (y << 8)) & 0x00FF00FF00FF00FF
+    y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F
+    y = (y | (y << 2)) & 0x3333333333333333
+    y = (y | (y << 1)) & 0x5555555555555555
+    return (x << 1) | y
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
@@ -1432,8 +1478,13 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		key := parts[1]
 		var addedNew int64 = 0
 		for i := 0; i < triplets; i++ {
+			lonStr := parts[2+i*3]
+			latStr := parts[3+i*3]
 			member := parts[4+i*3]
-			addedNew += s.store.ZAdd(key, 0, member)
+			lon, _ := strconv.ParseFloat(lonStr, 64)
+			lat, _ := strconv.ParseFloat(latStr, 64)
+			score := geoScoreFromLonLat(lon, lat)
+			addedNew += s.store.ZAdd(key, score, member)
 		}
 		conn.Write([]byte(fmt.Sprintf(":%d\r\n", addedNew)))
 		// Propagate write to replica only on success
