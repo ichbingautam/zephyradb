@@ -624,6 +624,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "REPLCONF":
 		// Accept replication config hints from replicas. Always respond OK.
 		// Examples: REPLCONF listening-port <port>, REPLCONF capa psync2, REPLCONF ACK <offset>
+		respondOK := true
 		if len(parts) >= 7 {
 			sub := strings.ToLower(parts[4])
 			switch sub {
@@ -633,11 +634,16 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 						s.listenPort = p
 					}
 				}
+			case "ack":
+				// Do not reply to REPLCONF ACK from replicas
+				respondOK = false
 			default:
-				// Ignore other subcommands like capa/ack
+				// Other subcommands like capa: reply OK
 			}
 		}
-		conn.Write([]byte("+OK\r\n"))
+		if respondOK {
+			conn.Write([]byte("+OK\r\n"))
+		}
 
 	case "PSYNC":
 		// Respond with FULLRESYNC and send a minimal empty RDB, then start streaming
