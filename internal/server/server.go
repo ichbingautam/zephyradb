@@ -298,9 +298,7 @@ func (s *Server) propagate(parts []string) {
 		_, _ = rc.Write(payload)
 	}
 	// Update master's global replication offset by the bytes written for this command
-	s.repMu.Lock()
 	s.replOffset += int64(len(payload))
-	s.repMu.Unlock()
 
 	// Send REPLCONF GETACK * to request acknowledgment from replicas
 	getack := "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
@@ -796,6 +794,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				s.store.Set(key, "1", 0)
 				conn.Write([]byte(":1\r\n"))
 			}
+			// Propagate write to replica
+			s.propagate(parts)
 		}
 
 	case "RPUSH":
@@ -808,6 +808,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			length := s.store.RPush(key, values...)
 			resp := fmt.Sprintf(":%d\r\n", length)
 			conn.Write([]byte(resp))
+			// Propagate write to replica
+			s.propagate(parts)
 		}
 
 	case "LPUSH":
@@ -820,6 +822,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			length := s.store.LPush(key, values...)
 			resp := fmt.Sprintf(":%d\r\n", length)
 			conn.Write([]byte(resp))
+			// Propagate write to replica
+			s.propagate(parts)
 		}
 
 	case "LPOP":
@@ -860,6 +864,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				conn.Write([]byte(resp))
 			}
 		}
+		// Propagate write to replica
+		s.propagate(parts)
 
 	case "LLEN":
 		if len(parts) == 5 {
@@ -904,6 +910,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			removed := s.store.LRem(key, count, value)
 			resp := fmt.Sprintf(":%d\r\n", removed)
 			conn.Write([]byte(resp))
+			// Propagate write to replica
+			s.propagate(parts)
 		}
 
 	case "BLPOP":
@@ -927,6 +935,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 			resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
 			conn.Write([]byte(resp))
+			// Propagate write to replica
+			s.propagate(parts)
 		}
 
 	case "TYPE":
@@ -1107,6 +1117,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Return the new entry's ID
 		resp := fmt.Sprintf("$%d\r\n%s\r\n", len(newID.String()), newID.String())
 		conn.Write([]byte(resp))
+		// Propagate write to replica
+		s.propagate(parts)
 
 	case "XRANGE":
 		if len(parts) != 9 {
