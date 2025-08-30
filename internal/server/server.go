@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/codecrafters-io/redis-starter-go/internal/commands"
 	"github.com/codecrafters-io/redis-starter-go/internal/storage"
 )
 
@@ -565,16 +563,18 @@ func (s *Server) startReplicaHandshake() {
 
 // connState holds per-connection state such as transaction mode
 type connState struct {
-	inMulti bool
-	// queue holds RESP command parts queued during a MULTI transaction
-	queue [][]string
+    inMulti bool
+    // queue holds RESP command parts queued during a MULTI transaction
+    queue [][]string
+    // subscribedChannels tracks channels this connection is subscribed to
+    subscribedChannels map[string]bool
 }
 
 // respCaptureConn is a minimal net.Conn that captures writes into a buffer.
 // It implements the net.Conn interface to be used in place of a real connection
 // when we want to capture RESP output produced by command handlers.
 type respCaptureConn struct {
-	buf bytes.Buffer
+    buf bytes.Buffer
 }
 
 func (c *respCaptureConn) Read(b []byte) (n int, err error)   { return 0, fmt.Errorf("not supported") }
@@ -606,23 +606,23 @@ func (d *discardConn) SetWriteDeadline(t time.Time) error { return nil }
 // Returns:
 //   - A new Server instance ready to accept connections
 func New() *Server {
-	return &Server{
-		store: storage.New(),
-		role:  "master",
-		// Hardcode a 40-char pseudo random string as replication ID for this stage
-		replID:     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
-		replOffset: 0,
-		// RDB defaults
-		configDir:        ".",
-		configDBFilename: "dump.rdb",
-	}
+    return &Server{
+        store: storage.New(),
+        role:  "master",
+        // Hardcode a 40-char pseudo random string as replication ID for this stage
+        replID:     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
+        replOffset: 0,
+        // RDB defaults
+        configDir:        ".",
+        configDBFilename: "dump.rdb",
+    }
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
 func (s *Server) SetReplicaOf(host string, port int) {
-	s.role = "slave"
-	s.masterHost = host
-	s.masterPort = port
+    s.role = "slave"
+    s.masterHost = host
+    s.masterPort = port
 }
 
 // Start initializes the server and begins listening for client connections.
@@ -640,36 +640,36 @@ func (s *Server) SetReplicaOf(host string, port int) {
 //
 // This is a blocking call that runs indefinitely while handling connections.
 func (s *Server) Start(addr string) error {
-	// Remember our listening port for replication handshake
-	if _, p, err := net.SplitHostPort(addr); err == nil {
-		if pi, err := strconv.Atoi(p); err == nil {
-			s.listenPort = pi
-		}
-	}
-	// Load RDB from disk before accepting connections
-	s.loadRDBFromDisk()
+    // Remember our listening port for replication handshake
+    if _, p, err := net.SplitHostPort(addr); err == nil {
+        if pi, err := strconv.Atoi(p); err == nil {
+            s.listenPort = pi
+        }
+    }
+    // Load RDB from disk before accepting connections
+    s.loadRDBFromDisk()
 
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to bind to %s: %w", addr, err)
-	}
-	defer l.Close()
+    l, err := net.Listen("tcp", addr)
+    if err != nil {
+        return fmt.Errorf("failed to bind to %s: %w", addr, err)
+    }
+    defer l.Close()
 
-	fmt.Printf("Server listening on %s\n", addr)
+    fmt.Printf("Server listening on %s\n", addr)
 
-	// If configured as a replica, begin the replication handshake with master.
-	if s.role == "slave" && s.masterHost != "" && s.masterPort != 0 {
-		go s.startReplicaHandshake()
-	}
+    // If configured as a replica, begin the replication handshake with master.
+    if s.role == "slave" && s.masterHost != "" && s.masterPort != 0 {
+        go s.startReplicaHandshake()
+    }
 
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			fmt.Printf("Error accepting connection: %v\n", err)
-			continue
-		}
-		go s.handleConnection(conn)
-	}
+    for {
+        conn, err := l.Accept()
+        if err != nil {
+            fmt.Printf("Error accepting connection: %v\n", err)
+            continue
+        }
+        go s.handleConnection(conn)
+    }
 }
 
 // handleConnection processes a single client connection.
@@ -686,322 +686,333 @@ func (s *Server) Start(addr string) error {
 //
 //   - conn: The TCP connection to the client
 func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
+    defer conn.Close()
 
-	// Set read and write timeouts
-	err := conn.SetDeadline(time.Now().Add(30 * time.Second))
-	if err != nil {
-		fmt.Printf("Error setting deadline: %v\n", err)
-		return
-	}
+    // Set read and write timeouts
+    err := conn.SetDeadline(time.Now().Add(30 * time.Second))
+    if err != nil {
+        fmt.Printf("Error setting deadline: %v\n", err)
+        return
+    }
 
-	reader := bufio.NewReader(conn)
-	state := &connState{}
+    reader := bufio.NewReader(conn)
+    state := &connState{}
 
-	// Helper function to read a line from the connection (up to and including the CRLF)
-	readLine := func() (string, error) {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-		return line, nil
-	}
+    // Helper function to read a line from the connection (up to and including the CRLF)
+    readLine := func() (string, error) {
+        line, err := reader.ReadString('\n')
+        if err != nil {
+            return "", err
+        }
+        return line, nil
+    }
 
-	// Helper function to read a bulk string
-	readBulkString := func() (string, error) {
-		// Read the length line (e.g., "$6\r\n")
-		lengthLine, err := readLine()
-		if err != nil {
-			return "", fmt.Errorf("error reading bulk string length: %v", err)
-		}
+    // Helper function to read a bulk string
+    readBulkString := func() (string, error) {
+        // Read the length line (e.g., "$6\r\n")
+        lengthLine, err := readLine()
+        if err != nil {
+            return "", fmt.Errorf("error reading bulk string length: %v", err)
+        }
 
-		// Parse the length (e.g., "$6\r\n" -> "6")
-		if !strings.HasPrefix(lengthLine, "$") {
-			return "", fmt.Errorf("expected bulk string header, got: %q", lengthLine)
-		}
+        // Parse the length (e.g., "$6\r\n" -> "6")
+        if !strings.HasPrefix(lengthLine, "$") {
+            return "", fmt.Errorf("expected bulk string header, got: %q", lengthLine)
+        }
 
-		// Extract just the number part (remove '$' and trim CRLF)
-		numberPart := strings.TrimSuffix(lengthLine[1:], "\r\n")
-		length, err := strconv.Atoi(numberPart)
-		if err != nil {
-			return "", fmt.Errorf("invalid bulk string length: %v", err)
-		}
+        // Extract just the number part (remove '$' and trim CRLF)
+        numberPart := strings.TrimSuffix(lengthLine[1:], "\r\n")
+        length, err := strconv.Atoi(numberPart)
+        if err != nil {
+            return "", fmt.Errorf("invalid bulk string length: %v", err)
+        }
 
-		// Special case: null bulk string
-		if length == -1 {
-			return "", nil
-		}
+        // Special case: null bulk string
+        if length == -1 {
+            return "", nil
+        }
 
-		// Read the data (not including the CRLF)
-		data := make([]byte, length)
-		_, err = io.ReadFull(reader, data)
-		if err != nil {
-			return "", fmt.Errorf("error reading bulk string data: %v", err)
-		}
+        // Read the data (not including the CRLF)
+        data := make([]byte, length)
+        _, err = io.ReadFull(reader, data)
+        if err != nil {
+            return "", fmt.Errorf("error reading bulk string data: %v", err)
+        }
 
-		// Read and verify the trailing CRLF
-		crlf := make([]byte, 2)
-		_, err = io.ReadFull(reader, crlf)
-		if err != nil {
-			return "", fmt.Errorf("error reading CRLF: %v", err)
-		}
-		if crlf[0] != '\r' || crlf[1] != '\n' {
-			return "", fmt.Errorf("expected CRLF after bulk string data, got: %q", crlf)
-		}
+        // Read and verify the trailing CRLF
+        crlf := make([]byte, 2)
+        _, err = io.ReadFull(reader, crlf)
+        if err != nil {
+            return "", fmt.Errorf("error reading CRLF: %v", err)
+        }
+        if crlf[0] != '\r' || crlf[1] != '\n' {
+            return "", fmt.Errorf("expected CRLF after bulk string data, got: %q", crlf)
+        }
 
-		return string(data), nil
-	}
+        return string(data), nil
+    }
 
-	for {
-		// Reset read deadline
-		err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		if err != nil {
-			fmt.Printf("Error resetting read deadline: %v\n", err)
-			return
-		}
+    for {
+        // Reset read deadline
+        err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+        if err != nil {
+            fmt.Printf("Error resetting read deadline: %v\n", err)
+            return
+        }
 
-		// Read the first character to determine the RESP type
-		firstChar, err := reader.ReadByte()
-		if err != nil {
-			if err != io.EOF {
-				fmt.Printf("Error reading from connection: %v\n", err)
-			}
-			return
-		}
-		fmt.Printf("Read first character: %q (0x%x)\n", firstChar, firstChar)
+        // Read the first character to determine the RESP type
+        firstChar, err := reader.ReadByte()
+        if err != nil {
+            if err != io.EOF {
+                fmt.Printf("Error reading from connection: %v\n", err)
+            }
+            return
+        }
+        fmt.Printf("Read first character: %q (0x%x)\n", firstChar, firstChar)
 
-		// For array type, we've already read the '*' character
-		// so we don't need to unread it
+        // For array type, we've already read the '*' character
+        // so we don't need to unread it
 
-		switch firstChar {
-		case '*': // Array
-			// Read the array size line (e.g., "3\r\n")
-			sizeLine, err := readLine()
-			if err != nil {
-				fmt.Printf("Error reading array size: %v\n", err)
-				return
-			}
+        switch firstChar {
+        case '*': // Array
+            // Read the array size line (e.g., "3\r\n")
+            sizeLine, err := readLine()
+            if err != nil {
+                fmt.Printf("Error reading array size: %v\n", err)
+                return
+            }
 
-			// Parse the array size (e.g., "3" from "3\r\n")
-			sizeStr := strings.TrimSuffix(sizeLine, "\r\n")
-			size, err := strconv.Atoi(sizeStr)
-			if err != nil {
-				fmt.Printf("Invalid array size: %v (line: %q)\n", err, sizeLine)
-				return
-			}
+            // Parse the array size (e.g., "3" from "3\r\n")
+            sizeStr := strings.TrimSuffix(sizeLine, "\r\n")
+            size, err := strconv.Atoi(sizeStr)
+            if err != nil {
+                fmt.Printf("Invalid array size: %v (line: %q)\n", err, sizeLine)
+                return
+            }
 
-			fmt.Printf("Array size: %d\n", size)
+            fmt.Printf("Array size: %d\n", size)
 
-			// Read each element in the array
-			parts := make([]string, 0, size)
-			for i := 0; i < size; i++ {
-				// Read the first character of the next element
-				firstChar, err := reader.ReadByte()
-				if err != nil {
-					fmt.Printf("Error reading element type: %v\n", err)
-					return
-				}
+            // Read each element in the array
+            parts := make([]string, 0, size)
+            for i := 0; i < size; i++ {
+                // Read the first character of the next element
+                firstChar, err := reader.ReadByte()
+                if err != nil {
+                    fmt.Printf("Error reading element type: %v\n", err)
+                    return
+                }
 
-				// For bulk strings, read the length and data
-				if firstChar == '$' {
-					// Put the '$' back for readBulkString to handle
-					if err := reader.UnreadByte(); err != nil {
-						fmt.Printf("Error unreading byte: %v\n", err)
-						return
-					}
+                // For bulk strings, read the length and data
+                if firstChar == '$' {
+                    // Put the '$' back for readBulkString to handle
+                    if err := reader.UnreadByte(); err != nil {
+                        fmt.Printf("Error unreading byte: %v\n", err)
+                        return
+                    }
 
-					// Read the bulk string
-					data, err := readBulkString()
-					if err != nil {
-						fmt.Printf("Error reading bulk string: %v\n", err)
-						return
-					}
-					parts = append(parts, data)
-				} else {
-					// For simple strings, read until CRLF
-					line, err := readLine()
-					if err != nil {
-						fmt.Printf("Error reading simple string: %v\n", err)
-						return
-					}
-					parts = append(parts, strings.TrimSuffix(line, "\r\n"))
-				}
-			}
+                    // Read the bulk string
+                    data, err := readBulkString()
+                    if err != nil {
+                        fmt.Printf("Error reading bulk string: %v\n", err)
+                        return
+                    }
+                    parts = append(parts, data)
+                } else {
+                    // For simple strings, read until CRLF
+                    line, err := readLine()
+                    if err != nil {
+                        fmt.Printf("Error reading simple string: %v\n", err)
+                        return
+                    }
+                    parts = append(parts, strings.TrimSuffix(line, "\r\n"))
+                }
+            }
 
-			// Log the parsed command
-			fmt.Printf("Parsed command: %v\n", parts)
+            // Log the parsed command
+            fmt.Printf("Parsed command: %v\n", parts)
 
-			// Process the complete command
-			if len(parts) > 0 {
-				// Log the raw parts for debugging
-				fmt.Printf("Raw command parts: %#v\n", parts)
-				// The parts array already contains the parsed command and arguments
-				// No need to filter out anything as the RESP parsing already handled that
-				s.handleCommand(conn, parts, state)
-			}
+            // Process the complete command
+            if len(parts) > 0 {
+                // Log the raw parts for debugging
+                fmt.Printf("Raw command parts: %#v\n", parts)
+                // The parts array already contains the parsed command and arguments
+                // No need to filter out anything as the RESP parsing already handled that
+                s.handleCommand(conn, parts, state)
+            }
 
-		default:
-			// For now, ignore other RESP types
-			fmt.Printf("Unhandled RESP type: %c\n", firstChar)
-			// Skip to the end of the line
-			_, err := reader.ReadString('\n')
-			if err != nil && err != io.EOF {
-				fmt.Printf("Error skipping to end of line: %v\n", err)
-				return
-			}
-		}
-	}
+        default:
+            // For now, ignore other RESP types
+            fmt.Printf("Unhandled RESP type: %c\n", firstChar)
+            // Skip to the end of the line
+            _, err := reader.ReadString('\n')
+            if err != nil && err != io.EOF {
+                fmt.Printf("Error skipping to end of line: %v\n", err)
+                return
+            }
+        }
+    }
 }
 
 func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) {
-	if len(parts) < 1 {
-		fmt.Printf("Invalid command parts: %v\n", parts)
-		return
-	}
-	// The command is always the first part
-	cmd := strings.ToUpper(parts[0])
-	fmt.Printf("Processing command: %v, parts: %v\n", cmd, parts)
+    if len(parts) < 1 {
+        fmt.Printf("Invalid command parts: %v\n", parts)
+        return
+    }
+    // The command is always the first part
+    cmd := strings.ToUpper(parts[0])
+    fmt.Printf("Processing command: %v, parts: %v\n", cmd, parts)
 
-	// If we're in a MULTI transaction, queue all commands except transaction controls
-	if state.inMulti {
-		switch cmd {
-		case "MULTI":
-			// Redis errors on nested MULTI, but for this stage we'll just acknowledge current MULTI state
-			// and return OK again (keeps behavior simple). Alternatively, we could return an error.
-			conn.Write([]byte("+OK\r\n"))
-			return
-		case "EXEC":
-			// Allow EXEC to be handled below
-		case "DISCARD":
-			// Allow DISCARD to be handled below
-		default:
-			// Queue the command without executing it and acknowledge with QUEUED
-			state.queue = append(state.queue, append([]string(nil), parts...))
-			conn.Write([]byte("+QUEUED\r\n"))
-			return
-		}
-	}
+    // If we're in a MULTI transaction, queue all commands except transaction controls
+    if state.inMulti {
+        switch cmd {
+        case "MULTI":
+            // Redis errors on nested MULTI, but for this stage we'll just acknowledge current MULTI state
+            // and return OK again (keeps behavior simple). Alternatively, we could return an error.
+            conn.Write([]byte("+OK\r\n"))
+            return
+        case "EXEC":
+            // Allow EXEC to be handled below
+        case "DISCARD":
+            // Allow DISCARD to be handled below
+        default:
+            // Queue the command without executing it and acknowledge with QUEUED
+            state.queue = append(state.queue, append([]string(nil), parts...))
+            conn.Write([]byte("+QUEUED\r\n"))
+            return
+        }
+    }
 
-	switch cmd {
-	case "PING":
-		// Basic health check
-		conn.Write([]byte("+PONG\r\n"))
+    switch cmd {
+    case "PING":
+        // Basic health check
+        conn.Write([]byte("+PONG\r\n"))
 
-	case "REPLCONF":
-		// Accept replication config hints from replicas. Always respond OK.
-		// Examples: REPLCONF listening-port <port>, REPLCONF capa psync2, REPLCONF ACK <offset>
-		fmt.Printf("Handling REPLCONF command with parts: %v\n", parts)
-		respondOK := true
-		if len(parts) >= 3 {
-			sub := strings.ToLower(parts[1])
-			switch sub {
-			case "getack":
-				// Handle GETACK * by returning the current replication offset
-				fmt.Printf("Handling REPLCONF GETACK with parts: %v\n", parts)
-				if len(parts) >= 3 && parts[2] == "*" {
-					s.repMu.Lock()
-					offset := s.replOffset
-					s.repMu.Unlock()
-					fmt.Printf("Current replication offset: %d\n", offset)
-					// Response format: *3
-					// $8
-					// REPLCONF
-					// $3
-					// ACK
-					// $<len(offset)>
-					// <offset>
-					offsetStr := strconv.FormatInt(offset, 10)
-					response := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offsetStr), offsetStr)
-					fmt.Printf("Sending response: %q\n", response)
-					if _, err := conn.Write([]byte(response)); err != nil {
-						fmt.Printf("Error writing response: %v\n", err)
-					} else {
-						fmt.Println("Response sent successfully")
-					}
-					// Don't send another response
-					return
-				}
-				respondOK = false
-			case "listening-port":
-				if len(parts) >= 3 {
-					if p, err := strconv.Atoi(parts[2]); err == nil {
-						s.listenPort = p
-					}
-				}
-			case "ack":
-				// Count ACKs received during an active WAIT GETACK window and do not reply
-				s.repMu.Lock()
-				if s.ackWaitActive {
-					if s.ackSeen == nil {
-						s.ackSeen = make(map[string]bool)
-					}
-					// Parse replica-provided ACK offset from parts[2] (for debugging if needed)
-					if len(parts) >= 3 {
-						// ackOffset := parts[2] // Available if needed for debugging
-					}
-					// Identify this replica uniquely by remote address
-					addr := ""
-					if conn != nil && conn.RemoteAddr() != nil {
-						addr = conn.RemoteAddr().String()
-					}
-					// Count only once per replica - any ACK response indicates the replica is active
-					if !s.ackSeen[addr] {
-						s.ackSeen[addr] = true
-						s.ackCount++
-						fmt.Printf("[WAIT] Received ACK from %s, total ACKs: %d\n", addr, s.ackCount)
-					}
-				}
-				s.repMu.Unlock()
-				respondOK = false
-			default:
-				// Other subcommands like capa: reply OK
-			}
-		}
-		if respondOK {
-			conn.Write([]byte("+OK\r\n"))
-		}
+    case "REPLCONF":
+        // Accept replication config hints from replicas. Always respond OK.
+        // Examples: REPLCONF listening-port <port>, REPLCONF capa psync2, REPLCONF ACK <offset>
+        fmt.Printf("Handling REPLCONF command with parts: %v\n", parts)
+        respondOK := true
+        if len(parts) >= 3 {
+            sub := strings.ToLower(parts[1])
+            switch sub {
+            case "getack":
+                // Handle GETACK * by returning the current replication offset
+                fmt.Printf("Handling REPLCONF GETACK with parts: %v\n", parts)
+                if len(parts) >= 3 && parts[2] == "*" {
+                    s.repMu.Lock()
+                    offset := s.replOffset
+                    s.repMu.Unlock()
+                    fmt.Printf("Current replication offset: %d\n", offset)
+                    // Response format: *3
+                    // $8
+                    // REPLCONF
+                    // $3
+                    // ACK
+                    // $<len(offset)>
+                    // <offset>
+                    offsetStr := strconv.FormatInt(offset, 10)
+                    response := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offsetStr), offsetStr)
+                    fmt.Printf("Sending response: %q\n", response)
+                    if _, err := conn.Write([]byte(response)); err != nil {
+                        fmt.Printf("Error writing response: %v\n", err)
+                    } else {
+                        fmt.Println("Response sent successfully")
+                    }
+                    // Don't send another response
+                    return
+                }
+                respondOK = false
+            case "listening-port":
+                if len(parts) >= 3 {
+                    if p, err := strconv.Atoi(parts[2]); err == nil {
+                        s.listenPort = p
+                    }
+                }
+            case "ack":
+                // Count ACKs received during an active WAIT GETACK window and do not reply
+                s.repMu.Lock()
+                if s.ackWaitActive {
+                    if s.ackSeen == nil {
+                        s.ackSeen = make(map[string]bool)
+                    }
+                    // Parse replica-provided ACK offset from parts[2] (for debugging if needed)
+                    if len(parts) >= 3 {
+                        // ackOffset := parts[2] // Available if needed for debugging
+                    }
+                    // Identify this replica uniquely by remote address
+                    addr := ""
+                    if conn != nil && conn.RemoteAddr() != nil {
+                        addr = conn.RemoteAddr().String()
+                    }
+                    // Count only once per replica - any ACK response indicates the replica is active
+                    if !s.ackSeen[addr] {
+                        s.ackSeen[addr] = true
+                        s.ackCount++
+                        fmt.Printf("[WAIT] Received ACK from %s, total ACKs: %d\n", addr, s.ackCount)
+                    }
+                }
+                s.repMu.Unlock()
+                respondOK = false
+            default:
+                // Other subcommands like capa: reply OK
+            }
+        }
+        if respondOK {
+            conn.Write([]byte("+OK\r\n"))
+        }
 
-	case "PSYNC":
-		// Respond with FULLRESYNC and send a minimal empty RDB, then start streaming
-		// subsequent commands to this replica connection.
-		// parts indices: [2]=PSYNC, [4]=replid_from_replica, [6]=offset
-		// We ignore provided replid/offset for this stage and always do FULLRESYNC.
-		full := fmt.Sprintf("+FULLRESYNC %s %d\r\n", s.replID, s.replOffset)
-		conn.Write([]byte(full))
-		rdb := emptyRDB()
-		// Send RDB as a bulk string
-		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
-		conn.Write(rdb)
-		// Register this connection as a replica for propagation
-		s.repMu.Lock()
-		s.replicaConns = append(s.replicaConns, conn)
-		fmt.Printf("[master] Registered replica connection, total replicas: %d\n", len(s.replicaConns))
-		s.repMu.Unlock()
+    case "PSYNC":
+        // Respond with FULLRESYNC and send a minimal empty RDB, then start streaming
+        // subsequent commands to this replica connection.
+        // parts indices: [2]=PSYNC, [4]=replid_from_replica, [6]=offset
+        // We ignore provided replid/offset for this stage and always do FULLRESYNC.
+        full := fmt.Sprintf("+FULLRESYNC %s %d\r\n", s.replID, s.replOffset)
+        conn.Write([]byte(full))
+        rdb := emptyRDB()
+        // Send RDB as a bulk string
+        conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
+        conn.Write(rdb)
+        // Register this connection as a replica for propagation
+        s.repMu.Lock()
+        s.replicaConns = append(s.replicaConns, conn)
+        fmt.Printf("[master] Registered replica connection, total replicas: %d\n", len(s.replicaConns))
+        s.repMu.Unlock()
 
-	case "SUBSCRIBE":
-		// Extract channel names from the command parts
-		if len(parts) < 2 {
-			conn.Write([]byte("-ERR wrong number of arguments for 'subscribe' command\r\n"))
-			return
-		}
-		// The channel names start from parts[1] (0-based index)
-		channels := parts[1:]
-		// Create and execute the SUBSCRIBE command
-		cmd, err := commands.NewSubscribeCommand(channels)
-		if err != nil {
-			conn.Write([]byte(fmt.Sprintf("-ERR %s\r\n", err.Error())))
-			return
-		}
-		// Get the response and write it to the connection
-		response := cmd.Execute(context.Background(), s.store)
-		conn.Write(response.Format())
+    case "SUBSCRIBE":
+        // Extract channel names from the command parts
+        if len(parts) < 2 {
+            conn.Write([]byte("-ERR wrong number of arguments for 'subscribe' command\r\n"))
+            return
+        }
+        if state.subscribedChannels == nil {
+            state.subscribedChannels = make(map[string]bool)
+        }
+        // Current count of unique subscribed channels
+        count := 0
+        for range state.subscribedChannels {
+            count++
+        }
+        // For each requested channel, subscribe if new, and respond with current count
+        for _, ch := range parts[1:] {
+            if !state.subscribedChannels[ch] {
+                state.subscribedChannels[ch] = true
+                count++
+            }
+            // RESP: ["subscribe", ch, (integer) count]
+            resp := bytes.Buffer{}
+            resp.WriteString("*3\r\n")
+            resp.WriteString("$9\r\nsubscribe\r\n")
+            resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(ch), ch))
+            resp.WriteString(fmt.Sprintf(":%d\r\n", count))
+            conn.Write(resp.Bytes())
+        }
 
-	case "ECHO":
-		if len(parts) == 2 {
-			arg := parts[1]
-			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
-			conn.Write([]byte(resp))
-		}
+    case "ECHO":
+        if len(parts) == 2 {
+            arg := parts[1]
+            resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
+            conn.Write([]byte(resp))
+        }
 
 	case "DISCARD":
 		if !state.inMulti {
