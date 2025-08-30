@@ -39,6 +39,36 @@ type Server struct {
 	replOffset int64
 }
 
+// startReplicaHandshake performs the initial step of the replica->master handshake:
+// send a PING to the configured master. Subsequent steps (REPLCONF/PSYNC) are
+// implemented in later stages.
+func (s *Server) startReplicaHandshake() {
+    addr := net.JoinHostPort(s.masterHost, strconv.Itoa(s.masterPort))
+    conn, err := net.Dial("tcp", addr)
+    if err != nil {
+        fmt.Printf("[replica] failed to connect to master %s: %v\n", addr, err)
+        return
+    }
+    // We keep the connection open for later stages; for now we just send PING
+    // and read the response if any.
+    go func() {
+        // Best-effort read; ignore any error for this stage.
+        r := bufio.NewReader(conn)
+        // Read a line to consume +PONG or error; non-blocking behavior isn't necessary here.
+        conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+        _, _ = r.ReadString('\n')
+        conn.SetReadDeadline(time.Time{})
+    }()
+
+    // RESP-encoded PING: *1\r\n$4\r\nPING\r\n
+    if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+        fmt.Printf("[replica] failed to send PING to master %s: %v\n", addr, err)
+        _ = conn.Close()
+        return
+    }
+    fmt.Printf("[replica] sent PING to master %s\n", addr)
+}
+
 // connState holds per-connection state such as transaction mode
 type connState struct {
 	inMulti bool
@@ -107,6 +137,11 @@ func (s *Server) Start(addr string) error {
 	defer l.Close()
 
 	fmt.Printf("Server listening on %s\n", addr)
+
+    // If configured as a replica, begin the replication handshake with master.
+    if s.role == "slave" && s.masterHost != "" && s.masterPort != 0 {
+        go s.startReplicaHandshake()
+    }
 
 	for {
 		conn, err := l.Accept()
