@@ -743,17 +743,20 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "REPLCONF":
 		// Accept replication config hints from replicas. Always respond OK.
 		// Examples: REPLCONF listening-port <port>, REPLCONF capa psync2, REPLCONF ACK <offset>
+		fmt.Printf("Handling REPLCONF command with parts: %v\n", parts)
 		respondOK := true
 		if len(parts) >= 3 {
 			sub := strings.ToLower(parts[1])
 			switch sub {
 			case "getack":
 				// Handle GETACK * by returning the current replication offset
+				fmt.Printf("Handling REPLCONF GETACK with parts: %v\n", parts)
 				if len(parts) >= 3 && parts[2] == "*" {
 					s.repMu.Lock()
 					offset := s.replOffset
 					s.repMu.Unlock()
-					// Return: *3
+					fmt.Printf("Current replication offset: %d\n", offset)
+					// Response format: *3
 					// $8
 					// REPLCONF
 					// $3
@@ -762,7 +765,13 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 					// <offset>
 					offsetStr := strconv.FormatInt(offset, 10)
 					response := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$%d\r\n%s\r\n", len(offsetStr), offsetStr)
-					conn.Write([]byte(response))
+					fmt.Printf("Sending response: %q\n", response)
+					if _, err := conn.Write([]byte(response)); err != nil {
+						fmt.Printf("Error writing response: %v\n", err)
+					} else {
+						fmt.Println("Response sent successfully")
+					}
+					// Don't send another response
 					return
 				}
 				respondOK = false
