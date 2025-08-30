@@ -135,6 +135,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		// Start a transaction: for this stage, just acknowledge with OK
 		conn.Write([]byte("+OK\r\n"))
 
+	case "EXEC":
+		// EXEC without an active MULTI should return an error in this stage
+		conn.Write([]byte("-ERR EXEC without MULTI\r\n"))
+
 	case "SET":
 		if len(parts) >= 7 {
 			key := parts[4]
