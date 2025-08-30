@@ -1673,8 +1673,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			// Check existence in zset
 			score, ok := s.store.ZScore(key, m)
 			if !ok {
-				// Use null bulk string to represent nil entry
-				resp += "$-1\r\n"
+				// Use null array for missing entry (matches Redis GEOPOS)
+				resp += "*-1\r\n"
 				continue
 			}
 			// Decode lon/lat from score (round first to avoid fp precision loss)
