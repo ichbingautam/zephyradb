@@ -182,8 +182,8 @@ func (s *Server) loadRDBFromDisk() {
 			ttlMs = expiresAtMs - now
 		}
 		s.store.Set(key, val, ttlMs)
-		// Only single key needed for this stage
-		break
+		// Reset expiresAtMs for next key
+		expiresAtMs = 0
 	}
 }
 
