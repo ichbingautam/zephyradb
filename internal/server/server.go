@@ -451,6 +451,20 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			ids = append(ids, parts[idx])
 		}
 
+		// Support `$` as ID: translate to the current last ID of each stream so we only return new entries
+		for i := range ids {
+			if ids[i] == "$" {
+				entries, _ := s.store.XRANGE(keys[i], "-", "+")
+				if len(entries) > 0 {
+					last := entries[len(entries)-1].ID.String()
+					ids[i] = last
+				} else {
+					// Empty stream, use 0-0 so XREAD exclusive start returns nothing until something is added
+					ids[i] = "0-0"
+				}
+			}
+		}
+
 		entriesByKey, err := s.store.XREAD(keys, ids, block, timeoutMs)
 		if err != nil {
 			conn.Write([]byte(fmt.Sprintf("-ERR %v\r\n", err)))
