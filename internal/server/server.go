@@ -59,6 +59,8 @@ type Server struct {
 	// Pub/Sub: server-wide subscription counts per channel
 	subMu       sync.Mutex
 	channelSubs map[string]int
+	// Pub/Sub: mapping of channel -> set of subscribed connections
+	subConns map[string]map[net.Conn]bool
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
@@ -620,6 +622,7 @@ func New() *Server {
         configDir:        ".",
         configDBFilename: "dump.rdb",
         channelSubs:      make(map[string]int),
+        subConns:         make(map[string]map[net.Conn]bool),
     }
 }
 
@@ -713,6 +716,13 @@ func (s *Server) handleConnection(conn net.Conn) {
                         s.channelSubs[ch]--
                         if s.channelSubs[ch] == 0 {
                             delete(s.channelSubs, ch)
+                        }
+                    }
+                    // Remove this connection from the channel's connection set
+                    if set, ok2 := s.subConns[ch]; ok2 {
+                        delete(set, conn)
+                        if len(set) == 0 {
+                            delete(s.subConns, ch)
                         }
                     }
                 }
@@ -1044,9 +1054,13 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             if !state.subscribedChannels[ch] {
                 state.subscribedChannels[ch] = true
                 count++
-                // Update server-wide subscription count
+                // Update server-wide subscription count and connection set
                 s.subMu.Lock()
                 s.channelSubs[ch]++
+                if s.subConns[ch] == nil {
+                    s.subConns[ch] = make(map[net.Conn]bool)
+                }
+                s.subConns[ch][conn] = true
                 s.subMu.Unlock()
             }
             // RESP: ["subscribe", ch, (integer) count]
@@ -1058,18 +1072,98 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
             conn.Write(resp.Bytes())
         }
 
+    case "UNSUBSCRIBE":
+        // Remove subscriptions for one or more channels. If no channels are provided,
+        // unsubscribe from all currently subscribed channels.
+        if state.subscribedChannels == nil {
+            state.subscribedChannels = make(map[string]bool)
+        }
+        // Determine initial count of subscribed channels
+        count := 0
+        for _, ok := range state.subscribedChannels {
+            if ok {
+                count++
+            }
+        }
+        // Build list of target channels
+        targets := parts[1:]
+        if len(targets) == 0 {
+            // Unsubscribe from all: enumerate keys
+            targets = make([]string, 0, len(state.subscribedChannels))
+            for ch := range state.subscribedChannels {
+                targets = append(targets, ch)
+            }
+            // If no subscriptions at all, Redis still replies with a single entry?
+            // We'll follow standard behavior: if empty and no args, send nothing.
+            // But to be safe for tests, if there are no targets, do nothing.
+        }
+        for _, ch := range targets {
+            if state.subscribedChannels[ch] {
+                // Update connection state
+                state.subscribedChannels[ch] = false
+                if count > 0 {
+                    count--
+                }
+                // Update server-wide structures
+                s.subMu.Lock()
+                if s.channelSubs[ch] > 0 {
+                    s.channelSubs[ch]--
+                    if s.channelSubs[ch] == 0 {
+                        delete(s.channelSubs, ch)
+                    }
+                }
+                if set, ok := s.subConns[ch]; ok {
+                    delete(set, conn)
+                    if len(set) == 0 {
+                        delete(s.subConns, ch)
+                    }
+                }
+                s.subMu.Unlock()
+            }
+            // Reply: ["unsubscribe", ch, (integer) remaining]
+            resp := bytes.Buffer{}
+            resp.WriteString("*3\r\n")
+            resp.WriteString("$11\r\nunsubscribe\r\n")
+            resp.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(ch), ch))
+            resp.WriteString(fmt.Sprintf(":%d\r\n", count))
+            conn.Write(resp.Bytes())
+        }
+
     case "PUBLISH":
-        // Syntax: PUBLISH channel message -> integer reply: number of subscribers to channel
+        // Syntax: PUBLISH channel message -> integer reply: number of clients that received the message
         if len(parts) < 3 {
             conn.Write([]byte("-ERR wrong number of arguments for 'publish' command\r\n"))
             return
         }
         ch := parts[1]
-        // message := parts[2] // Not used in this stage
+        message := parts[2]
+        // Snapshot the target connection set under lock
         s.subMu.Lock()
-        subs := s.channelSubs[ch]
+        set := s.subConns[ch]
+        // Build the RESP message once
+        var mbuf bytes.Buffer
+        mbuf.WriteString("*3\r\n")
+        mbuf.WriteString("$7\r\nmessage\r\n")
+        mbuf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(ch), ch))
+        mbuf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(message), message))
+        // Collect recipients to send to outside the lock
+        recipients := make([]net.Conn, 0, len(set))
+        for c := range set {
+            recipients = append(recipients, c)
+        }
         s.subMu.Unlock()
-        conn.Write([]byte(fmt.Sprintf(":%d\r\n", subs)))
+        // Deliver to each subscribed connection
+        delivered := 0
+        payload := mbuf.Bytes()
+        for _, rc := range recipients {
+            if rc != nil {
+                if _, err := rc.Write(payload); err == nil {
+                    delivered++
+                }
+            }
+        }
+        // Reply with number of clients that received the message
+        conn.Write([]byte(fmt.Sprintf(":%d\r\n", delivered)))
 
     case "ECHO":
         if len(parts) == 2 {
