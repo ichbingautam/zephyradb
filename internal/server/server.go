@@ -695,12 +695,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) {
-	if len(parts) < 2 {
+	if len(parts) < 1 {
 		fmt.Printf("Invalid command parts: %v\n", parts)
 		return
 	}
-	cmdIdx := 2
-	cmd := strings.ToUpper(parts[cmdIdx])
+	// The command is always the first part
+	cmd := strings.ToUpper(parts[0])
 	fmt.Printf("Processing command: %v, parts: %v\n", cmd, parts)
 
 	// If we're in a MULTI transaction, queue all commands except transaction controls
