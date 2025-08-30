@@ -114,21 +114,13 @@ func deinterleaveBits(z uint64) (uint64, uint64) {
     return x, y
 }
 
-// Convert quantized bits back to coordinate using the same bisection
+// Convert quantized bits back to coordinate using precise linear mapping to the cell center
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-    // Mirror the encoding bisection exactly: walk from MSB to LSB
-    for i := int(step) - 1; i >= 0; i-- {
-        mid := (min + max) / 2
-        if ((bits >> uint(i)) & 1) == 1 {
-            // Bit 1 -> choose upper half (raise lower bound)
-            min = mid
-        } else {
-            // Bit 0 -> choose lower half (lower upper bound)
-            max = mid
-        }
-    }
-    // Return the midpoint of the final interval (geohash cell center)
-    return (min + max) / 2
+    // Center of the quantization cell: min + (bits + 0.5) / 2^step * (max - min)
+    // Use math.Ldexp to compute 2^step precisely in float64
+    size := math.Ldexp(1.0, int(step))
+    frac := (float64(bits) + 0.5) / size
+    return min + frac*(max-min)
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
