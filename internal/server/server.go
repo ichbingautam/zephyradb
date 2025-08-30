@@ -1404,15 +1404,15 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			id = &parsedID
 		}
 
-		// Parse field-value pairs
-		fields := make(map[string]string)
-		for i := 8; i < len(parts); i += 4 {
+		// Parse field-value pairs from value-only parts: start at index 3
+		if len(parts) < 5 || ((len(parts)-3)%2 != 0) {
+			conn.Write([]byte("-ERR wrong number of arguments for 'xadd' command\r\n"))
+			return
+		}
+		fields := make(map[string]string, (len(parts)-3)/2)
+		for i := 3; i+1 < len(parts); i += 2 {
 			field := parts[i]
-			if i+2 >= len(parts) {
-				conn.Write([]byte("-ERR unbalanced stream field-value pairs\r\n"))
-				return
-			}
-			value := parts[i+2]
+			value := parts[i+1]
 			fields[field] = value
 		}
 
