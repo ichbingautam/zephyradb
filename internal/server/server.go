@@ -407,9 +407,18 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		rdb := emptyRDB()
 		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
 		conn.Write(rdb) // No trailing CRLF after binary contents
-		// Register this connection as a replication connection to propagate future writes
+		// Register this connection as a replica so we can propagate writes and count in WAIT
 		s.repMu.Lock()
-		s.replicaConns = append(s.replicaConns, conn)
+		already := false
+		for _, rc := range s.replicaConns {
+			if rc == conn {
+				already = true
+				break
+			}
+		}
+		if !already {
+			s.replicaConns = append(s.replicaConns, conn)
+		}
 		s.repMu.Unlock()
 
 	case "ECHO":
