@@ -281,7 +281,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 
 			key, value, ok := s.store.BLPop(context.Background(), timeout, keys...)
 			if !ok {
-				conn.Write([]byte("$-1\r\n"))
+				// For BLPOP timeout, Redis returns a null array (not a null bulk string)
+				conn.Write([]byte("*-1\r\n"))
 				return
 			}
 
