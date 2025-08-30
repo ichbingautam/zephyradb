@@ -14,7 +14,7 @@ import (
 // XReadCommand represents the XREAD command
 type XReadCommand struct {
 	streams map[string]string // stream key -> entry ID
-	block   int64             // block timeout in milliseconds, -1 for no blocking
+	block  int64              // block timeout in milliseconds, -1 for no blocking
 }
 
 // NewXReadCommand creates a new XREAD command
@@ -25,7 +25,7 @@ func NewXReadCommand(streams map[string]string, block int64) (*XReadCommand, err
 
 	return &XReadCommand{
 		streams: streams,
-		block:    block,
+		block:   block,
 	}, nil
 }
 
@@ -70,7 +70,7 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 		}
 
 		// Try to get data with blocking
-		allEntries, err := store.XREAD(keys, ids, true)
+		allEntries, err := store.XREAD(keys, ids, true, cmd.block)
 		if err != nil {
 			return resp.Error(fmt.Sprintf("ERR %s", err.Error()))
 		}
@@ -103,12 +103,12 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 		}
 
 		// If we get here, the context was cancelled or timed out with no data
-		// Return a null array (consistent with Redis behavior)
-		return resp.Array{resp.BulkString{IsNull: true}}
+		// Return a null bulk string (as per stage instruction)
+		return resp.BulkString{IsNull: true}
 	}
 
 	// Non-blocking read
-	allEntries, err := store.XREAD(keys, ids, false)
+	allEntries, err := store.XREAD(keys, ids, false, 0)
 	if err != nil {
 		return resp.Error(fmt.Sprintf("ERR %s", err.Error()))
 	}
@@ -133,6 +133,11 @@ func (cmd *XReadCommand) Execute(ctx context.Context, store *storage.Store) resp
 			}
 		}
 		allEntries = filteredEntries
+	}
+
+	if len(allEntries) == 0 {
+		// If no results (non-blocking path), return a null array
+		return resp.Nil{}
 	}
 
 	return formatXReadResponse(keys, allEntries)
@@ -178,11 +183,6 @@ func formatXReadResponse(keys []string, allEntries map[string][]storage.StreamEn
 			resp.BulkString{Value: key},
 			resp.Array(entryValues),
 		})
-	}
-
-	if len(results) == 0 {
-		// If no results, return a null array (consistent with Redis behavior)
-		return resp.Array{resp.BulkString{IsNull: true}}
 	}
 
 	// Return array of results

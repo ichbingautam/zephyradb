@@ -393,29 +393,48 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		conn.Write([]byte(resp))
 
 	case "XREAD":
-		// Support: XREAD STREAMS key id  (single stream minimal)
-		// General parsing for multiple streams: XREAD STREAMS key1 ... keyN id1 ... idN
+		// Support: XREAD [BLOCK ms] STREAMS key1 ... keyN id1 ... idN
 		if len(parts) < 9 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
 			return
 		}
-		if strings.ToUpper(parts[4]) != "STREAMS" {
+
+		argIdx := 4
+		block := false
+		var timeoutMs int64 = 0
+		// Optional BLOCK
+		if strings.ToUpper(parts[argIdx]) == "BLOCK" {
+			if len(parts) < argIdx+4 { // need BLOCK ms STREAMS at least
+				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
+				return
+			}
+			ms, err := strconv.ParseInt(parts[argIdx+2], 10, 64)
+			if err != nil || ms < 0 {
+				conn.Write([]byte("-ERR invalid block timeout\r\n"))
+				return
+			}
+			block = true
+			timeoutMs = ms
+			argIdx += 4 // skip BLOCK, $len, ms, and next $len will be STREAMS
+		}
+
+		if strings.ToUpper(parts[argIdx]) != "STREAMS" {
 			conn.Write([]byte("-ERR syntax error\r\n"))
 			return
 		}
-		// Count how many value tokens remain after STREAMS
-		// Value tokens are every 2nd element: positions 6,8,10,...
-		remaining := (len(parts) - 5) / 2
+
+		// After STREAMS, remaining values are keys then ids
+		remaining := (len(parts) - (argIdx + 1)) / 2
 		if remaining <= 0 || remaining%2 != 0 {
 			conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
 			return
 		}
-		n := remaining / 2 // number of streams
+		n := remaining / 2
 		keys := make([]string, 0, n)
 		ids := make([]string, 0, n)
 		// keys
 		for i := 0; i < n; i++ {
-			idx := 6 + i*2
+			idx := argIdx + 2 + i*2
 			if idx >= len(parts) {
 				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
 				return
@@ -424,7 +443,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 		}
 		// ids
 		for j := 0; j < n; j++ {
-			idx := 6 + n*2 + j*2
+			idx := argIdx + 2 + n*2 + j*2
 			if idx >= len(parts) {
 				conn.Write([]byte("-ERR wrong number of arguments for 'xread' command\r\n"))
 				return
@@ -432,7 +451,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			ids = append(ids, parts[idx])
 		}
 
-		entriesByKey, err := s.store.XREAD(keys, ids, false)
+		entriesByKey, err := s.store.XREAD(keys, ids, block, timeoutMs)
 		if err != nil {
 			conn.Write([]byte(fmt.Sprintf("-ERR %v\r\n", err)))
 			return
@@ -448,8 +467,13 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			}
 		}
 		if count == 0 {
-			// Null array as per Redis when nothing to return
-			conn.Write([]byte("*-1\r\n"))
+			// If blocking was requested and timed out: return null bulk string
+			if block {
+				conn.Write([]byte("$-1\r\n"))
+			} else {
+				// Non-blocking: null array when nothing to return
+				conn.Write([]byte("*-1\r\n"))
+			}
 			return
 		}
 

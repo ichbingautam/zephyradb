@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/internal/types"
 )
@@ -92,7 +93,7 @@ func (s *Store) XRANGE(key string, start, end string) ([]StreamEntry, error) {
 }
 
 // XREAD reads from one or more streams, optionally blocking until new data arrives
-func (s *Store) XREAD(streams []string, ids []string, block bool) (map[string][]StreamEntry, error) {
+func (s *Store) XREAD(streams []string, ids []string, block bool, timeoutMs int64) (map[string][]StreamEntry, error) {
 	if len(streams) != len(ids) {
 		return nil, fmt.Errorf("number of streams and IDs must match")
 	}
@@ -116,10 +117,32 @@ func (s *Store) XREAD(streams []string, ids []string, block bool) (map[string][]
 		return result, nil
 	}
 
-	// Block and wait for new data
-	// In a real implementation, this would use channels and conditions
-	// Here we just return empty for simplicity
-	return result, nil
+	// Block and wait for new data, polling until timeout
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		// Small sleep to avoid busy waiting
+		time.Sleep(10 * time.Millisecond)
+
+		// Re-check for new data
+		hasData = false
+		for i, stream := range streams {
+			entries, err := s.readStream(stream, ids[i])
+			if err != nil {
+				return nil, err
+			}
+			if len(entries) > 0 {
+				hasData = true
+				result[stream] = entries
+			}
+		}
+		if hasData {
+			return result, nil
+		}
+		if time.Now().After(deadline) {
+			// Timed out
+			return result, nil
+		}
+	}
 }
 
 func (s *Store) readStream(key string, id string) ([]StreamEntry, error) {
