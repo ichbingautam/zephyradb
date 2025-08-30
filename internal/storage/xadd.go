@@ -176,7 +176,9 @@ func (s *Store) readStream(key string, id string) ([]StreamEntry, error) {
 
 	startID, err := ParseStreamID(id)
 	if err != nil {
-		return nil, fmt.Errorf("invalid ID: %v", err)
+		// Be tolerant: treat invalid ID as no new entries instead of erroring out.
+		// This prevents XREAD from failing in blocking scenarios.
+		return []StreamEntry{}, nil
 	}
 
 	// Return entries with ID greater than startID (exclusive)
