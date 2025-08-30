@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codecrafters-io/redis-starter-go/internal/commands"
 	"github.com/codecrafters-io/redis-starter-go/internal/types"
-
 	"github.com/codecrafters-io/redis-starter-go/internal/storage"
 )
 
@@ -576,35 +576,132 @@ func (s *Server) Start(addr string) error {
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	scanner := bufio.NewScanner(conn)
-	var parts []string
-	expectedParts := 0
+	// Set a read deadline to prevent hanging
+	err := conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err != nil {
+		fmt.Printf("Error setting read deadline: %v\n", err)
+		return
+	}
+
+	// Create a TeeReader to log all incoming data
+	var buf bytes.Buffer
+	tee := io.TeeReader(conn, &buf)
+	reader := bufio.NewReader(tee)
 	state := &connState{}
 
-	for scanner.Scan() {
-		text := scanner.Text()
-		fmt.Println("Received command:", text)
+	// Log new connection
+	fmt.Printf("New connection from %s\n", conn.RemoteAddr().String())
 
-		if len(parts) == 0 && strings.HasPrefix(text, "*") {
-			n, err := strconv.Atoi(text[1:])
-			if err == nil {
-				expectedParts = n*2 + 1 // Array header + pairs of ($len, value)
-			}
+	for {
+		// Log all received data so far
+		data, _ := io.ReadAll(&buf)
+		if len(data) > 0 {
+			fmt.Printf("Received data: %q\n", data)
 		}
 
-		parts = append(parts, text)
+		// Read the first character to determine the RESP type
+		firstChar, err := reader.ReadByte()
+		if err != nil {
+			if err != io.EOF {
+				fmt.Printf("Error reading from connection: %v\n", err)
+			}
+			return
+		}
 
-		if expectedParts > 0 && len(parts) == expectedParts {
-			s.handleCommand(conn, parts, state)
-			parts = nil
-			expectedParts = 0
+		// Reset read deadline
+		err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if err != nil {
+			fmt.Printf("Error resetting read deadline: %v\n", err)
+			return
+		}
+
+		fmt.Printf("First character: %q (0x%x)\n", firstChar, firstChar)
+
+		switch firstChar {
+		case '*': // Array
+			// Read the number of elements in the array
+			sizeLine, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading array size: %v\n", err)
+				return
+			}
+			size, err := strconv.Atoi(strings.TrimSpace(sizeLine))
+			if err != nil {
+				fmt.Printf("Invalid array size: %v\n", err)
+				return
+			}
+
+			// Read each element in the array
+			parts := make([]string, 0, size)
+			for i := 0; i < size; i++ {
+				// Read the bulk string header
+				header, err := reader.ReadString('\n')
+				if err != nil {
+					fmt.Printf("Error reading bulk string header: %v\n", err)
+					return
+				}
+
+				if !strings.HasPrefix(header, "$") {
+					fmt.Printf("Expected bulk string header, got: %q\n", header)
+					return
+				}
+
+				// Read the bulk string data
+				length, err := strconv.Atoi(strings.TrimSpace(header[1:]))
+				if err != nil {
+					fmt.Printf("Invalid bulk string length: %v\n", err)
+					return
+				}
+
+				// Read the actual string data
+				data := make([]byte, length)
+				_, err = io.ReadFull(reader, data)
+				if err != nil {
+					fmt.Printf("Error reading bulk string data: %v\n", err)
+					return
+				}
+
+				// Read the trailing CRLF
+				_, err = reader.ReadByte() // CR
+				if err != nil {
+					fmt.Printf("Error reading CR: %v\n", err)
+					return
+				}
+				_, err = reader.ReadByte() // LF
+				if err != nil {
+					fmt.Printf("Error reading LF: %v\n", err)
+					return
+				}
+
+				parts = append(parts, string(data))
+			}
+
+			// Process the complete command
+			if len(parts) > 0 {
+				s.handleCommand(conn, parts, state)
+			}
+
+		default:
+			// For now, ignore other RESP types
+			fmt.Printf("Unhandled RESP type: %c\n", firstChar)
+			// Skip to the end of the line
+			_, err := reader.ReadString('\n')
+			if err != nil && err != io.EOF {
+				fmt.Printf("Error skipping to end of line: %v\n", err)
+				return
+			}
 		}
 	}
 }
 
 func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) {
+	if len(parts) < 3 {
+		fmt.Printf("Invalid command parts: %v\n", parts)
+		return
+	}
 	cmdIdx := 2
 	cmd := strings.ToUpper(parts[cmdIdx])
+	fmt.Printf("Processing command: %v, parts: %v\n", cmd, parts)
 
 	// If we're in a MULTI transaction, queue all commands except transaction controls
 	if state.inMulti {
@@ -693,6 +790,17 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s.replicaConns = append(s.replicaConns, conn)
 		fmt.Printf("[master] Registered replica connection, total replicas: %d\n", len(s.replicaConns))
 		s.repMu.Unlock()
+
+	case "SUBSCRIBE":
+		// Create and execute the SUBSCRIBE command
+		cmd, err := commands.NewSubscribeCommand(parts[4:])
+		if err != nil {
+			conn.Write([]byte(fmt.Sprintf("-ERR %s\r\n", err.Error())))
+			return
+		}
+		// Get the response and write it to the connection
+		response := cmd.Execute(context.Background(), s.store)
+		conn.Write(response.Format())
 
 	case "ECHO":
 		if len(parts) == 5 {
