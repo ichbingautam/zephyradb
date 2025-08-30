@@ -652,8 +652,8 @@ func coordToBits(val, min, max float64, step uint) uint64 {
     // normalize to [0,1]
     scale := (val - min) / (max - min)
     maxBits := (1 << step) - 1
-    // round to nearest integer to spread evenly
-    return uint64(math.Floor(scale*float64(maxBits) + 0.5))
+    // use floor to match Redis geohash quantization
+    return uint64(math.Floor(scale * float64(maxBits)))
 }
 
 func interleaveBits(x, y uint64) uint64 {
