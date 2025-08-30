@@ -42,25 +42,33 @@ func (s *Store) ZRange(key string, start, stop int64) []string {
         return items[i].s < items[j].s
     })
 
-    // Bounds and slicing
-    if start < 0 {
-        start = 0
+    // Translate negatives relative to end and clamp
+    iStart := start
+    iStop := stop
+    if iStart < 0 {
+        iStart = int64(n) + iStart
     }
-    if stop < 0 {
+    if iStop < 0 {
+        iStop = int64(n) + iStop
+    }
+    if iStart < 0 {
+        iStart = 0
+    }
+    if iStop < 0 {
+        iStop = 0
+    }
+    if iStart >= int64(n) {
         return []string{}
     }
-    if start >= int64(n) {
-        return []string{}
+    if iStop >= int64(n) {
+        iStop = int64(n) - 1
     }
-    if stop >= int64(n) {
-        stop = int64(n) - 1
-    }
-    if start > stop {
+    if iStart > iStop {
         return []string{}
     }
 
-    res := make([]string, 0, stop-start+1)
-    for i := start; i <= stop; i++ {
+    res := make([]string, 0, iStop-iStart+1)
+    for i := iStart; i <= iStop; i++ {
         res = append(res, items[i].m)
     }
     return res
