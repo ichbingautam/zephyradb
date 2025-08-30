@@ -99,8 +99,7 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 }
 
 // Reverse of interleaveBits: extract original x (lon) and y (lat) bitstreams
-// Our interleave writes y's bit i at position 2*i and x's bit i at 2*i+1.
-// So to deinterleave, pick even bits for y and odd bits for x.
+// interleaveBits returns (x<<1) | y, so even bit positions are y and odd are x.
 func deinterleaveBits(z uint64) (uint64, uint64) {
     var x uint64 = 0
     var y uint64 = 0
@@ -124,8 +123,8 @@ func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
             max = mid
         }
     }
-    // Return the upper bound of the final interval to match reference decoding
-    return max
+    // Return the lower bound of the final interval (aligns with expected quantization)
+    return min
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
@@ -1676,8 +1675,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 				resp += "$-1\r\n"
 				continue
 			}
-			// Decode lon/lat from score
-			z := uint64(math.Round(score))
+			// Decode lon/lat from score (scores are within float64's exact integer range)
+			z := uint64(score)
 			lonBits, latBits := deinterleaveBits(z)
 			lonVal := bitsToCoord(lonBits, geoLonMin, geoLonMax, geoStep)
 			latVal := bitsToCoord(latBits, geoLatMin, geoLatMax, geoStep)
