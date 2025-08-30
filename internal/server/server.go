@@ -159,6 +159,26 @@ func (s *Server) handleCommand(conn net.Conn, parts []string) {
 			}
 		}
 
+	case "INCR":
+		if len(parts) == 5 {
+			key := parts[4]
+			if value, exists := s.store.GetString(key); exists {
+				// Parse existing value
+				iv, err := strconv.ParseInt(value, 10, 64)
+				if err != nil {
+					conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+					return
+				}
+				iv++
+				s.store.Set(key, fmt.Sprintf("%d", iv), 0)
+				conn.Write([]byte(fmt.Sprintf(":%d\r\n", iv)))
+			} else {
+				// If key doesn't exist, set to 1
+				s.store.Set(key, "1", 0)
+				conn.Write([]byte(":1\r\n"))
+			}
+		}
+
 	case "RPUSH":
 		if len(parts) >= 7 {
 			key := parts[4]
