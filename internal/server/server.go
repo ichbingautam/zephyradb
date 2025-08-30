@@ -115,17 +115,17 @@ func deinterleaveBits(z uint64) (uint64, uint64) {
 
 // Convert quantized bits back to coordinate using the same bisection
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-	// Mirror the encoding bisection exactly: walk from MSB to LSB
-	for i := int(step) - 1; i >= 0; i-- {
-		mid := (min + max) / 2
-		if ((bits >> uint(i)) & 1) == 1 {
-			min = mid
-		} else {
-			max = mid
-		}
-	}
-	// Return the lower bound of the final interval to match reference decoding
-	return min
+    // Mirror the encoding bisection exactly: walk from MSB to LSB
+    for i := int(step) - 1; i >= 0; i-- {
+        mid := (min + max) / 2
+        if ((bits >> uint(i)) & 1) == 1 {
+            min = mid
+        } else {
+            max = mid
+        }
+    }
+    // Return the upper bound of the final interval to match reference decoding
+    return max
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
