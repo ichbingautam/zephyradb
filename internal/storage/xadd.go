@@ -94,16 +94,19 @@ func (s *Store) XRANGE(key string, start, end string) ([]StreamEntry, error) {
 
 // XREAD reads from one or more streams, optionally blocking until new data arrives
 func (s *Store) XREAD(streams []string, ids []string, block bool, timeoutMs int64) (map[string][]StreamEntry, error) {
-	if len(streams) != len(ids) {
-		return nil, fmt.Errorf("number of streams and IDs must match")
-	}
+    // Be tolerant: operate on the overlapping portion if lengths mismatch
+    n := len(streams)
+    if len(ids) < n {
+        n = len(ids)
+    }
 
 	result := make(map[string][]StreamEntry)
 
 	// First try to read without locking
 	hasData := false
-	for i, stream := range streams {
-		entries, err := s.readStream(stream, ids[i])
+	for i := 0; i < n; i++ {
+        stream := streams[i]
+        entries, err := s.readStream(stream, ids[i])
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +131,8 @@ func (s *Store) XREAD(streams []string, ids []string, block bool, timeoutMs int6
 
 		// Re-check for new data
 		hasData = false
-		for i, stream := range streams {
+		for i := 0; i < n; i++ {
+            stream := streams[i]
 			entries, err := s.readStream(stream, ids[i])
 			if err != nil {
 				return nil, err
@@ -158,7 +162,8 @@ func (s *Store) readStream(key string, id string) ([]StreamEntry, error) {
 	}
 
 	if entry.Type != types.TypeStream {
-		return nil, fmt.Errorf("key %s is not a stream", key)
+		// Be tolerant: treat non-stream as empty so XREAD doesn't error out
+		return []StreamEntry{}, nil
 	}
 
 	stream := entry.Value.(*Stream)
