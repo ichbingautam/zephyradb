@@ -299,14 +299,6 @@ func (s *Server) propagate(parts []string) {
 	}
 	// Update master's global replication offset by the bytes written for this command
 	s.replOffset += int64(len(payload))
-
-	// Send REPLCONF GETACK * to request acknowledgment from replicas
-	getack := "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
-	for _, rc := range s.replicaConns {
-		if rc != nil {
-			_, _ = rc.Write([]byte(getack))
-		}
-	}
 }
 
 // emptyRDB returns a minimal, valid empty RDB payload.
