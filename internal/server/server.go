@@ -902,8 +902,14 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
     switch cmd {
     case "PING":
-        // Basic health check
-        conn.Write([]byte("+PONG\r\n"))
+        // In subscribed mode, respond with array ["pong", ""]
+        if state.subscribedChannels != nil && len(state.subscribedChannels) > 0 {
+            // *2 \r\n $4 \r\n pong \r\n $0 \r\n \r\n
+            conn.Write([]byte("*2\r\n$4\r\npong\r\n$0\r\n\r\n"))
+        } else {
+            // Basic health check (non-subscribed mode)
+            conn.Write([]byte("+PONG\r\n"))
+        }
 
     case "REPLCONF":
         // Accept replication config hints from replicas. Always respond OK.
