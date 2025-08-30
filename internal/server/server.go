@@ -86,6 +86,19 @@ func (s *Server) startReplicaHandshake() {
     }
     _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
     _, _ = r.ReadString('\n') // expect +OK
+    _ = conn.SetReadDeadline(time.Time{})
+
+    // 3) PSYNC ? -1
+    psync := "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+    if _, err := conn.Write([]byte(psync)); err != nil {
+        fmt.Printf("[replica] failed to send PSYNC to %s: %v\n", addr, err)
+        _ = conn.Close()
+        return
+    }
+    // Read FULLRESYNC line (ignore content for now)
+    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+    _, _ = r.ReadString('\n')
+    _ = conn.SetReadDeadline(time.Time{})
 }
 
 // connState holds per-connection state such as transaction mode
@@ -252,6 +265,11 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	case "REPLCONF":
 		// For this stage, acknowledge REPLCONF commands with OK
 		conn.Write([]byte("+OK\r\n"))
+
+	case "PSYNC":
+		// Respond with FULLRESYNC <replid> 0 for initial sync
+		resp := fmt.Sprintf("+FULLRESYNC %s 0\r\n", s.replID)
+		conn.Write([]byte(resp))
 
 	case "ECHO":
 		if len(parts) == 5 {
