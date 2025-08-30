@@ -156,6 +156,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			return
 		case "EXEC":
 			// Allow EXEC to be handled below
+		case "DISCARD":
+			// Allow DISCARD to be handled below
 		default:
 			// Queue the command without executing it and acknowledge with QUEUED
 			state.queue = append(state.queue, append([]string(nil), parts...))
@@ -174,6 +176,16 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			resp := fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)
 			conn.Write([]byte(resp))
 		}
+
+	case "DISCARD":
+		if !state.inMulti {
+			conn.Write([]byte("-ERR DISCARD without MULTI\r\n"))
+			return
+		}
+		// Abort transaction: clear queue and exit multi
+		state.inMulti = false
+		state.queue = nil
+		conn.Write([]byte("+OK\r\n"))
 
 	case "MULTI":
 		// Start a transaction and reset any previous queue
