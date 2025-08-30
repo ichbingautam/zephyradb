@@ -37,6 +37,8 @@ type Server struct {
 	// replication identity and offset
 	replID     string
 	replOffset int64
+	// local listening port for REPLCONF listening-port
+	listenPort int
 }
 
 // startReplicaHandshake performs the initial step of the replica->master handshake:
@@ -49,16 +51,7 @@ func (s *Server) startReplicaHandshake() {
         fmt.Printf("[replica] failed to connect to master %s: %v\n", addr, err)
         return
     }
-    // We keep the connection open for later stages; for now we just send PING
-    // and read the response if any.
-    go func() {
-        // Best-effort read; ignore any error for this stage.
-        r := bufio.NewReader(conn)
-        // Read a line to consume +PONG or error; non-blocking behavior isn't necessary here.
-        conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-        _, _ = r.ReadString('\n')
-        conn.SetReadDeadline(time.Time{})
-    }()
+    r := bufio.NewReader(conn)
 
     // RESP-encoded PING: *1\r\n$4\r\nPING\r\n
     if _, err := conn.Write([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
@@ -67,6 +60,32 @@ func (s *Server) startReplicaHandshake() {
         return
     }
     fmt.Printf("[replica] sent PING to master %s\n", addr)
+
+    // Read PONG (ignore content, but wait up to 5s)
+    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+    _, _ = r.ReadString('\n')
+    _ = conn.SetReadDeadline(time.Time{})
+
+    // 1) REPLCONF listening-port <PORT>
+    portStr := strconv.Itoa(s.listenPort)
+    replconf1 := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$%d\r\n%s\r\n", len(portStr), portStr)
+    if _, err := conn.Write([]byte(replconf1)); err != nil {
+        fmt.Printf("[replica] failed to send REPLCONF listening-port to %s: %v\n", addr, err)
+        _ = conn.Close()
+        return
+    }
+    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+    _, _ = r.ReadString('\n') // expect +OK
+
+    // 2) REPLCONF capa psync2
+    replconf2 := "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+    if _, err := conn.Write([]byte(replconf2)); err != nil {
+        fmt.Printf("[replica] failed to send REPLCONF capa to %s: %v\n", addr, err)
+        _ = conn.Close()
+        return
+    }
+    _ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+    _, _ = r.ReadString('\n') // expect +OK
 }
 
 // connState holds per-connection state such as transaction mode
@@ -130,11 +149,17 @@ func (s *Server) SetReplicaOf(host string, port int) {
 //
 // This is a blocking call that runs indefinitely while handling connections.
 func (s *Server) Start(addr string) error {
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("failed to bind to %s: %w", addr, err)
-	}
-	defer l.Close()
+    // Remember our listening port for replication handshake
+    if _, p, err := net.SplitHostPort(addr); err == nil {
+        if pi, err := strconv.Atoi(p); err == nil {
+            s.listenPort = pi
+        }
+    }
+    l, err := net.Listen("tcp", addr)
+    if err != nil {
+        return fmt.Errorf("failed to bind to %s: %w", addr, err)
+    }
+    defer l.Close()
 
 	fmt.Printf("Server listening on %s\n", addr)
 
@@ -223,6 +248,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 	switch cmd {
 	case "PING":
 		conn.Write([]byte("+PONG\r\n"))
+
+	case "REPLCONF":
+		// For this stage, acknowledge REPLCONF commands with OK
+		conn.Write([]byte("+OK\r\n"))
 
 	case "ECHO":
 		if len(parts) == 5 {
