@@ -11,6 +11,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/internal/types"
@@ -39,6 +40,29 @@ type Server struct {
 	replOffset int64
 	// local listening port for REPLCONF listening-port
 	listenPort int
+	// replicaConn holds the active replication connection to a single replica
+	replicaConn net.Conn
+	// repMu guards access to replicaConn and writes to it
+	repMu sync.Mutex
+}
+
+// propagate sends a parsed RESP command (as captured in parts) to the replica connection, if present.
+// parts holds each RESP line without CRLF, as read by bufio.Scanner. We reconstruct CRLF before writing.
+func (s *Server) propagate(parts []string) {
+    if s == nil || s.role != "master" {
+        return
+    }
+    s.repMu.Lock()
+    defer s.repMu.Unlock()
+    if s.replicaConn == nil {
+        return
+    }
+    var buf bytes.Buffer
+    for _, line := range parts {
+        buf.WriteString(line)
+        buf.WriteString("\r\n")
+    }
+    _, _ = s.replicaConn.Write(buf.Bytes())
 }
 
 // emptyRDB returns a minimal, valid empty RDB payload.
@@ -289,6 +313,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		rdb := emptyRDB()
 		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
 		conn.Write(rdb) // No trailing CRLF after binary contents
+		// Mark this connection as the replication connection to propagate future writes
+		s.repMu.Lock()
+		s.replicaConn = conn
+		s.repMu.Unlock()
 
 	case "ECHO":
 		if len(parts) == 5 {
@@ -350,6 +378,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 
 			s.store.Set(key, value, expiryMs)
 			conn.Write([]byte("+OK\r\n"))
+			// Propagate write to replica
+			s.propagate(parts)
 		}
 
 	case "GET":
