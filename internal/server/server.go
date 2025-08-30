@@ -6,7 +6,6 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"math"
@@ -117,7 +116,7 @@ func compact1By1(v uint64) uint64 {
 
 // Convert quantized bits back to coordinate using the same bisection
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-    // Mirror the encoding bisection to reduce rounding drift and match Redis behavior
+    // Mirror the encoding bisection exactly: walk from MSB to LSB
     for i := int(step) - 1; i >= 0; i-- {
         mid := (min + max) / 2
         if ((bits >> uint(i)) & 1) == 1 {
@@ -126,6 +125,7 @@ func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
             max = mid
         }
     }
+    // Return the center of the final interval
     return (min + max) / 2
 }
 
@@ -1339,347 +1339,22 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		s1, ok1 := s.store.ZScore(key, m1)
 		s2, ok2 := s.store.ZScore(key, m2)
 		if !ok1 || !ok2 {
+			// If either member doesn't exist, return null bulk
 			conn.Write([]byte("$-1\r\n"))
 			return
 		}
-		// Decode coords
-		lon1b, lat1b := deinterleaveBits(uint64(s1))
-		lon2b, lat2b := deinterleaveBits(uint64(s2))
+		// Round scores before converting to uint64 to avoid truncation of LSB
+		z1 := uint64(math.Round(s1))
+		z2 := uint64(math.Round(s2))
+		lon1b, lat1b := deinterleaveBits(z1)
+		lon2b, lat2b := deinterleaveBits(z2)
 		lon1 := bitsToCoord(lon1b, geoLonMin, geoLonMax, geoStep)
 		lat1 := bitsToCoord(lat1b, geoLatMin, geoLatMax, geoStep)
 		lon2 := bitsToCoord(lon2b, geoLonMin, geoLonMax, geoStep)
 		lat2 := bitsToCoord(lat2b, geoLatMin, geoLatMax, geoStep)
-
-		// Haversine distance in meters (Redis uses GEO_EARTH_RADIUS_IN_METERS = 6372797.560856)
-		const earthRadius = 6372797.560856
-		dist := haversine(lat1, lon1, lat2, lon2, earthRadius)
-		val := fmt.Sprintf("%.4f", dist)
-		resp := fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
-		conn.Write([]byte(resp))
-
-	case "GEOSEARCH":
-		// GEOSEARCH key FROMLONLAT lon lat BYRADIUS radius unit
-		if len(parts) < 8 {
-			conn.Write([]byte("-ERR wrong number of arguments for 'geosearch' command\r\n"))
-			return
-		}
-		key := parts[1]
-		if strings.ToUpper(parts[2]) != "FROMLONLAT" {
-			conn.Write([]byte("-ERR syntax error\r\n"))
-			return
-		}
-		lon, err1 := strconv.ParseFloat(parts[3], 64)
-		lat, err2 := strconv.ParseFloat(parts[4], 64)
-		if err1 != nil || err2 != nil {
-			conn.Write([]byte("-ERR invalid longitude or latitude\r\n"))
-			return
-		}
-		if strings.ToUpper(parts[5]) != "BYRADIUS" {
-			conn.Write([]byte("-ERR syntax error\r\n"))
-			return
-		}
-		radius, err3 := strconv.ParseFloat(parts[6], 64)
-		unit := parts[7]
-		if err3 != nil || radius < 0 {
-			conn.Write([]byte("-ERR radius must be positive\r\n"))
-			return
-		}
-		factor, ok := geoUnitFactor(unit)
-		if !ok {
-			conn.Write([]byte("-ERR invalid unit\r\n"))
-			return
-		}
-		// fetch all members from zset
-		n := s.store.ZCard(key)
-		members := s.store.ZRange(key, 0, n-1)
-		matches := make([]string, 0)
-		// Precompute center in radians
-		const earthRadius = 6372797.560856
-		// Iterate members, decode coords, compute distance
-		for _, m := range members {
-			sc, ok := s.store.ZScore(key, m)
-			if !ok {
-				continue
-			}
-			lonb, latb := deinterleaveBits(uint64(sc))
-			mlon := bitsToCoord(lonb, geoLonMin, geoLonMax, geoStep)
-			mlat := bitsToCoord(latb, geoLatMin, geoLatMax, geoStep)
-			d := haversine(lat, lon, mlat, mlon, earthRadius)
-			if d <= radius*factor {
-				matches = append(matches, m)
-			}
-		}
-		// Build RESP array of matches
-		resp := fmt.Sprintf("*%d\r\n", len(matches))
-		for _, m := range matches {
-			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(m), m)
-		}
-		conn.Write([]byte(resp))
-
-	case "SET":
-		if len(parts) >= 3 {
-			key := parts[1]
-			value := parts[2]
-			expiryMs := int64(0)
-
-			// Handle PX option for expiry in milliseconds
-			if len(parts) >= 5 && strings.ToUpper(parts[3]) == "PX" {
-				if ms, err := strconv.ParseInt(parts[4], 10, 64); err == nil {
-					expiryMs = ms
-				}
-			}
-
-			s.store.Set(key, value, expiryMs)
-			conn.Write([]byte("+OK\r\n"))
-			// Propagate write to replica
-			s.propagate(parts)
-		} else {
-			conn.Write([]byte("-ERR wrong number of arguments for 'SET' command\r\n"))
-		}
-
-	case "GET":
-		if len(parts) == 2 {
-			key := parts[1]
-			if value, exists := s.store.GetString(key); exists {
-				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
-				conn.Write([]byte(resp))
-			} else {
-				conn.Write([]byte("$-1\r\n"))
-			}
-		} else {
-			conn.Write([]byte("-ERR wrong number of arguments for 'GET' command\r\n"))
-		}
-
-	case "INCR":
-		if len(parts) == 2 {
-			key := parts[1]
-			if value, exists := s.store.GetString(key); exists {
-				// Parse existing value
-				iv, err := strconv.ParseInt(value, 10, 64)
-				if err != nil {
-					conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
-					return
-				}
-				iv++
-				s.store.Set(key, fmt.Sprintf("%d", iv), 0)
-				conn.Write([]byte(fmt.Sprintf(":%d\r\n", iv)))
-			} else {
-				// If key doesn't exist, set to 1
-				s.store.Set(key, "1", 0)
-				conn.Write([]byte(":1\r\n"))
-			}
-			// Propagate write to replica
-			s.propagate(parts)
-		}
-
-	case "RPUSH":
-		if len(parts) >= 3 {
-			key := parts[1]
-			values := parts[2:]
-			length := s.store.RPush(key, values...)
-			resp := fmt.Sprintf(":%d\r\n", length)
-			conn.Write([]byte(resp))
-			// Propagate write to replica
-			s.propagate(parts)
-		}
-
-	case "LPUSH":
-		if len(parts) >= 3 {
-			key := parts[1]
-			values := parts[2:]
-			length := s.store.LPush(key, values...)
-			resp := fmt.Sprintf(":%d\r\n", length)
-			conn.Write([]byte(resp))
-			// Propagate write to replica
-			s.propagate(parts)
-		}
-
-	case "LPOP":
-		if len(parts) < 2 {
-			conn.Write([]byte("-ERR wrong number of arguments for 'lpop' command\r\n"))
-			return
-		}
-		key := parts[1]
-		count := int64(1)
-		if len(parts) >= 3 {
-			var err error
-			count, err = strconv.ParseInt(parts[2], 10, 64)
-			if err != nil {
-				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
-				return
-			}
-		}
-
-		values, ok := s.store.LPop(key, count)
-		if !ok {
-			conn.Write([]byte("$-1\r\n"))
-			return
-		}
-
-		if len(parts) >= 3 {
-			// Multi-element response
-			resp := fmt.Sprintf("*%d\r\n", len(values))
-			for _, v := range values {
-				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(v), v)
-			}
-			conn.Write([]byte(resp))
-		} else {
-			// Single-element response
-			if len(values) == 0 {
-				conn.Write([]byte("$-1\r\n"))
-			} else {
-				resp := fmt.Sprintf("$%d\r\n%s\r\n", len(values[0]), values[0])
-				conn.Write([]byte(resp))
-			}
-		}
-		// Propagate write to replica
-		s.propagate(parts)
-
-	case "LLEN":
-		if len(parts) == 2 {
-			key := parts[1]
-			length := s.store.LLen(key)
-			resp := fmt.Sprintf(":%d\r\n", length)
-			conn.Write([]byte(resp))
-		}
-
-	case "LRANGE":
-		if len(parts) == 4 {
-			key := parts[1]
-			start, err := strconv.ParseInt(parts[2], 10, 64)
-			if err != nil {
-				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
-				return
-			}
-			stop, err := strconv.ParseInt(parts[3], 10, 64)
-			if err != nil {
-				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
-				return
-			}
-
-			elements := s.store.LRange(key, start, stop)
-			resp := fmt.Sprintf("*%d\r\n", len(elements))
-			for _, elem := range elements {
-				resp += fmt.Sprintf("$%d\r\n%s\r\n", len(elem), elem)
-			}
-			conn.Write([]byte(resp))
-		}
-
-	case "LREM":
-		if len(parts) == 4 {
-			key := parts[1]
-			count, err := strconv.ParseInt(parts[2], 10, 64)
-			if err != nil {
-				conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
-				return
-			}
-			value := parts[3]
-
-			removed := s.store.LRem(key, count, value)
-			resp := fmt.Sprintf(":%d\r\n", removed)
-			conn.Write([]byte(resp))
-			// Propagate write to replica
-			s.propagate(parts)
-		}
-
-	case "BLPOP":
-		if len(parts) >= 3 {
-			keys := make([]string, 0)
-			for i := 1; i < len(parts)-1; i++ {
-				keys = append(keys, parts[i])
-			}
-			timeout, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-			if err != nil {
-				conn.Write([]byte("-ERR timeout is not a float or out of range\r\n"))
-				return
-			}
-
-			key, value, ok := s.store.BLPop(context.Background(), timeout, keys...)
-			if !ok {
-				// For BLPOP timeout, Redis returns a null array (not a null bulk string)
-				conn.Write([]byte("*-1\r\n"))
-				return
-			}
-
-			resp := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
-			conn.Write([]byte(resp))
-			// Propagate write to replica
-			s.propagate(parts)
-		}
-
-	case "GEOADD":
-		// Validate longitude/latitude and store locations in a sorted set with score=0.
-		// Syntax: GEOADD key lon lat member [lon lat member ...]
-		triplets := 0
-		if len(parts) > 2 {
-			triplets = (len(parts) - 2) / 3
-		}
-		// Validate each pair; if any invalid, return error and do not propagate
-		lonMin, lonMax := -180.0, 180.0
-		latMin, latMax := -85.05112878, 85.05112878
-		for i := 0; i < triplets; i++ {
-			lonStr := parts[2+i*3]
-			latStr := parts[3+i*3]
-			lon, errLon := strconv.ParseFloat(lonStr, 64)
-			lat, errLat := strconv.ParseFloat(latStr, 64)
-			if errLon != nil || errLat != nil {
-				// Return an error with the raw strings if parsing fails
-				errMsg := fmt.Sprintf("-ERR invalid longitude,latitude pair %s,%s\r\n", lonStr, latStr)
-				conn.Write([]byte(errMsg))
-				return
-			}
-			if lon < lonMin || lon > lonMax || lat < latMin || lat > latMax {
-				// Format with 6 decimals similar to Redis examples
-				errMsg := fmt.Sprintf("-ERR invalid longitude,latitude pair %.6f,%.6f\r\n", lon, lat)
-				conn.Write([]byte(errMsg))
-				return
-			}
-		}
-		// All valid: store into zset with score=0 and count newly added members
-		key := parts[1]
-		var addedNew int64 = 0
-		for i := 0; i < triplets; i++ {
-			lonStr := parts[2+i*3]
-			latStr := parts[3+i*3]
-			member := parts[4+i*3]
-			lon, _ := strconv.ParseFloat(lonStr, 64)
-			lat, _ := strconv.ParseFloat(latStr, 64)
-			score := geoScoreFromLonLat(lon, lat)
-			addedNew += s.store.ZAdd(key, score, member)
-		}
-		conn.Write([]byte(fmt.Sprintf(":%d\r\n", addedNew)))
-		// Propagate write to replica only on success
-		s.propagate(parts)
-
-	case "GEOPOS":
-		// GEOPOS key member [member ...]
-		if len(parts) < 3 {
-			conn.Write([]byte("-ERR wrong number of arguments for 'geopos' command\r\n"))
-			return
-		}
-		key := parts[1]
-		members := parts[2:]
-		// Top-level array: one entry per requested member
-		resp := fmt.Sprintf("*%d\r\n", len(members))
-		for _, m := range members {
-			// Check existence in zset
-			score, ok := s.store.ZScore(key, m)
-			if !ok {
-				resp += "*-1\r\n"
-				continue
-			}
-			// Decode lon/lat from score
-			z := uint64(score)
-			lonBits, latBits := deinterleaveBits(z)
-			lonVal := bitsToCoord(lonBits, geoLonMin, geoLonMax, geoStep)
-			latVal := bitsToCoord(latBits, geoLatMin, geoLatMax, geoStep)
-			lon := strconv.FormatFloat(lonVal, 'f', 17, 64)
-			lat := strconv.FormatFloat(latVal, 'f', 17, 64)
-			resp += "*2\r\n"
-			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(lon), lon)
-			resp += fmt.Sprintf("$%d\r\n%s\r\n", len(lat), lat)
-		}
-		conn.Write([]byte(resp))
+		dist := haversine(lat1, lon1, lat2, lon2, 6371000.0)
+		ds := strconv.FormatFloat(dist, 'f', -1, 64)
+		conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(ds), ds)))
 
 	case "TYPE":
 		if len(parts) == 2 {
