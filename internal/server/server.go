@@ -189,6 +189,18 @@ func (s *Server) startReplicaHandshake() {
         }
         parts2 = append(parts2, line)
         if expected2 > 0 && len(parts2) == expected2 {
+            // Check for REPLCONF GETACK * and reply with ACK 0
+            if len(parts2) >= 7 {
+                cmd := strings.ToUpper(parts2[2])
+                if cmd == "REPLCONF" && strings.ToUpper(parts2[4]) == "GETACK" {
+                    ack := "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+                    _, _ = conn.Write([]byte(ack))
+                    parts2 = nil
+                    expected2 = 0
+                    continue
+                }
+            }
+            // Execute other commands silently (no response back to master)
             s.handleCommand(silentConn, parts2, state)
             parts2 = nil
             expected2 = 0
