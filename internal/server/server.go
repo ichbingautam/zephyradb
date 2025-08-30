@@ -101,16 +101,10 @@ func compact1By1(v uint64) uint64 {
 
 // Convert quantized bits back to coordinate using the same bisection
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-    for i := int(step - 1); i >= 0; i-- {
-        mid := (min + max) / 2
-        if (bits>>uint(i))&1 == 1 {
-            min = mid
-        } else {
-            max = mid
-        }
-    }
-    // Return midpoint of the resulting interval
-    return (min + max) / 2
+    // Compute exact center of the quantized bucket represented by bits
+    denom := float64(uint64(1) << step)
+    fraction := (float64(bits) + 0.5) / denom
+    return min + fraction*(max-min)
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
