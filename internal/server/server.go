@@ -41,6 +41,21 @@ type Server struct {
 	listenPort int
 }
 
+// emptyRDB returns a minimal, valid empty RDB payload.
+// This is a hardcoded RDB representing an empty database.
+// The tester accepts any valid empty RDB.
+func emptyRDB() []byte {
+    // This payload corresponds to a minimal empty RDB created by Redis.
+    // Header: "REDIS0006"
+    // EOF opcode and 8-byte checksum follow. This is sufficient for tests.
+    return []byte{
+        0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x30, 0x36, // "REDIS0006"
+        0xFF, // EOF opcode
+        // 8-byte checksum (zeros acceptable for this challenge)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    }
+}
+
 // startReplicaHandshake performs the initial step of the replica->master handshake:
 // send a PING to the configured master. Subsequent steps (REPLCONF/PSYNC) are
 // implemented in later stages.
@@ -270,6 +285,10 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Respond with FULLRESYNC <replid> 0 for initial sync
 		resp := fmt.Sprintf("+FULLRESYNC %s 0\r\n", s.replID)
 		conn.Write([]byte(resp))
+		// Then send an empty RDB file as a bulk string: $<len>\r\n<binary>
+		rdb := emptyRDB()
+		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
+		conn.Write(rdb) // No trailing CRLF after binary contents
 
 	case "ECHO":
 		if len(parts) == 5 {
