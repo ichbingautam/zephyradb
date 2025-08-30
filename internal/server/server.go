@@ -396,8 +396,26 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		conn.Write([]byte("+PONG\r\n"))
 
 	case "REPLCONF":
-		// For this stage, acknowledge REPLCONF commands with OK
+		// Acknowledge REPLCONF commands with OK
 		conn.Write([]byte("+OK\r\n"))
+		// If we are master and this looks like a replica handshake step, register the connection
+		if s.role == "master" && len(parts) >= 5 {
+			arg := strings.ToLower(parts[4])
+			if arg == "listening-port" || arg == "capa" {
+				s.repMu.Lock()
+				already := false
+				for _, rc := range s.replicaConns {
+					if rc == conn {
+						already = true
+						break
+					}
+				}
+				if !already {
+					s.replicaConns = append(s.replicaConns, conn)
+				}
+				s.repMu.Unlock()
+			}
+		}
 
 	case "PSYNC":
 		// Respond with FULLRESYNC <replid> 0 for initial sync
@@ -406,7 +424,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Then send an empty RDB file as a bulk string: $<len>\r\n<binary>
 		rdb := emptyRDB()
 		conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(rdb))))
-		conn.Write(rdb) // No trailing CRLF after binary contents
+		conn.Write(rdb)
+		conn.Write([]byte("\r\n")) // RESP bulk strings end with CRLF
 		// Register this connection as a replica so we can propagate writes and count in WAIT
 		s.repMu.Lock()
 		already := false
