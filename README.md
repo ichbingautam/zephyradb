@@ -4,7 +4,7 @@
 
 **ZephyraDB** is a high-performance, Redis-compatible key-value store built in Go. It's designed to be elegant, memory-efficient, and fast, implementing core Redis functionality with modern Go best practices.
 
-Created as part of the ["Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis), ZephyraDB demonstrates advanced systems programming concepts including network protocols, concurrent data structures, and distributed systems patterns.
+Created as part of the ["Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis), ZephyraDB demonstrates advanced systems programming concepts, including network protocols, concurrent data structures, and distributed systems patterns.
 
 ## 🏗️ System Architecture
 
@@ -102,14 +102,14 @@ zephyradb/
 
 ### Prerequisites
 
-- **Go 1.21+**: [Download Go](https://golang.org/dl/)
+- **Go 1.24+**: [Download Go](https://golang.org/dl/)
 - **Redis CLI** (optional): For testing commands
 
 ### Installation & Running
 
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
+   git clone git@github.com:ichbingautam/zephyradb.git
    cd zephyradb
    ```
 
