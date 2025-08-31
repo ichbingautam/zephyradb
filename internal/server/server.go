@@ -138,9 +138,10 @@ func deinterleaveBits(interleaved uint64) (uint64, uint64) {
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
 	// Redis approach: calculate min and max range, then take midpoint
 	scale := max - min
+	// Use exact Redis calculation: (1ull << step)
 	stepSize := float64(uint64(1) << step)
 	
-	// Calculate range as Redis does
+	// Calculate range exactly as Redis does with explicit 1.0 multiplication
 	coordMin := min + (float64(bits)*1.0/stepSize)*scale
 	coordMax := min + (float64(bits+1)*1.0/stepSize)*scale
 	
@@ -740,7 +741,10 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	offset := (val - min) / scale
 	// Convert to fixed point based on step size - Redis casts to uint32
 	offset *= float64(uint64(1) << step)
-	return uint64(uint32(offset))
+	bits := uint64(uint32(offset))
+	// Apply step mask to ensure only relevant bits are used
+	const stepMask = (1 << geoStep) - 1
+	return bits & stepMask
 }
 
 func interleaveBits(x, y uint64) uint64 {
