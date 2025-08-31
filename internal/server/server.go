@@ -128,8 +128,8 @@ func deinterleaveBits(interleaved uint64) (uint64, uint64) {
 
 	// Redis deinterleave64 returns x | (y << 32) where x=lat, y=lon
 	hashSep := x | (y << 32)
-	lat := uint32(hashSep) & ((1 << geoStep) - 1)        // lower bits masked to geoStep
-	lon := uint32(hashSep >> 32) & ((1 << geoStep) - 1)  // upper bits masked to geoStep
+	lat := uint32(hashSep)        // lower 32 bits (latitude)
+	lon := uint32(hashSep >> 32)  // upper 32 bits (longitude)
 	return uint64(lat), uint64(lon)
 }
 
