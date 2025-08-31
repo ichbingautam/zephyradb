@@ -1379,8 +1379,8 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 		// Round scores before converting to uint64 to avoid truncation of LSB
 		z1 := uint64(math.Round(s1))
 		z2 := uint64(math.Round(s2))
-		lon1b, lat1b := deinterleaveBits(z1)
-		lon2b, lat2b := deinterleaveBits(z2)
+		lat1b, lon1b := deinterleaveBits(z1)
+		lat2b, lon2b := deinterleaveBits(z2)
 		lon1 := bitsToCoord(lon1b, geoLonMin, geoLonMax, geoStep)
 		lat1 := bitsToCoord(lat1b, geoLatMin, geoLatMax, geoStep)
 		lon2 := bitsToCoord(lon2b, geoLonMin, geoLonMax, geoStep)
@@ -1437,7 +1437,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			if !ok {
 				continue
 			}
-			lonb, latb := deinterleaveBits(uint64(math.Round(sc)))
+			latb, lonb := deinterleaveBits(uint64(math.Round(sc)))
 			mlon := bitsToCoord(lonb, geoLonMin, geoLonMax, geoStep)
 			mlat := bitsToCoord(latb, geoLatMin, geoLatMax, geoStep)
 			d := haversine(lat, lon, mlat, mlon, earthRadius)
