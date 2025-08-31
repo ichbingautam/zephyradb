@@ -126,7 +126,11 @@ func deinterleaveBits(interleaved uint64) (uint64, uint64) {
 	x = (x | (x >> S[5])) & B[5]
 	y = (y | (y >> S[5])) & B[5]
 
-	return x, y // x=latitude, y=longitude
+	// Redis deinterleave64 returns x | (y << 32) where x=lat, y=lon
+	hashSep := x | (y << 32)
+	lat := uint32(hashSep)        // lower 32 bits
+	lon := uint32(hashSep >> 32)  // upper 32 bits
+	return uint64(lat), uint64(lon)
 }
 
 // Convert quantized bits back to coordinate using Redis approach
