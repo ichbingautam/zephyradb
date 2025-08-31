@@ -740,12 +740,9 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	// Redis approach: calculate offset and convert to fixed point exactly as Redis does
 	scale := max - min
 	offset := (val - min) / scale
-	// Convert to fixed point based on step size - Redis casts to uint32
+	// Convert to fixed point based on step size - Redis uses (1ULL << step)
 	offset *= float64(uint64(1) << step)
-	bits := uint64(uint32(offset))
-	// Apply step mask to ensure only relevant bits are used
-	const stepMask = (1 << geoStep) - 1
-	return bits & stepMask
+	return uint64(offset)
 }
 
 func interleaveBits(x, y uint64) uint64 {
@@ -770,10 +767,7 @@ func interleaveBits(x, y uint64) uint64 {
 	x = (x | (x << S[0])) & B[0]
 	y = (y | (y << S[0])) & B[0]
 
-	result := x | (y << 1)
-	// Apply step mask to the final result to match Redis precision
-	const stepMask = (1 << (geoStep * 2)) - 1
-	return result & stepMask
+	return x | (y << 1)
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
