@@ -138,14 +138,15 @@ func deinterleaveBits(interleaved uint64) (uint64, uint64) {
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
 	// Redis approach: calculate min and max range, then take midpoint
 	scale := max - min
-	// Use exact Redis calculation: (1ull << step)
+	// Use exact Redis calculation: (1ull << step) - ensure it's uint64
 	stepSize := float64(uint64(1) << step)
 	
-	// Calculate range exactly as Redis does with explicit 1.0 multiplication
+	// Calculate range exactly as Redis does: ilato * 1.0 / (1ull << step)
+	// Redis: area->latitude.min = lat_range.min + (ilato * 1.0 / (1ull << step)) * lat_scale;
 	coordMin := min + (float64(bits)*1.0/stepSize)*scale
 	coordMax := min + (float64(bits+1)*1.0/stepSize)*scale
 	
-	// Return midpoint of the range
+	// Return midpoint of the range: (min + max) / 2
 	return (coordMin + coordMax) / 2.0
 }
 
@@ -769,7 +770,10 @@ func interleaveBits(x, y uint64) uint64 {
 	x = (x | (x << S[0])) & B[0]
 	y = (y | (y << S[0])) & B[0]
 
-	return x | (y << 1)
+	result := x | (y << 1)
+	// Apply step mask to the final result to match Redis precision
+	const stepMask = (1 << (geoStep * 2)) - 1
+	return result & stepMask
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
