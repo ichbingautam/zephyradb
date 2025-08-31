@@ -726,18 +726,12 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	if val > max {
 		val = max
 	}
-	var bits uint64 = 0
-	for i := uint(0); i < step; i++ {
-		mid := (min + max) / 2
-		bits <<= 1
-		if val > mid { // strict comparison to match Redis behavior
-			bits |= 1
-			min = mid
-		} else {
-			max = mid
-		}
-	}
-	return bits
+	// Redis approach: calculate offset and convert to fixed point
+	scale := max - min
+	offset := (val - min) / scale
+	// Convert to fixed point based on step size
+	offset *= float64(uint64(1) << step)
+	return uint64(offset)
 }
 
 func interleaveBits(x, y uint64) uint64 {
