@@ -717,7 +717,7 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	for i := uint(0); i < step; i++ {
 		mid := (min + max) / 2
 		bits <<= 1
-		if val >= mid { // non-strict to reduce bias
+		if val > mid { // strict comparison to match Redis behavior
 			bits |= 1
 			min = mid
 		} else {
