@@ -130,7 +130,10 @@ func deinterleaveBits(interleaved uint64) (uint64, uint64) {
 	hashSep := x | (y << 32)
 	lat := uint32(hashSep)        // lower 32 bits (latitude)
 	lon := uint32(hashSep >> 32)  // upper 32 bits (longitude)
-	return uint64(lat), uint64(lon)
+	
+	// Apply 26-bit mask to match Redis geohash precision
+	const geoStepMask = (1 << geoStep) - 1
+	return uint64(lat) & geoStepMask, uint64(lon) & geoStepMask
 }
 
 // Convert quantized bits back to coordinate using Redis approach
