@@ -725,8 +725,7 @@ func geoScoreFromLonLat(lon, lat float64) float64 {
 	lonBits := coordToBits(lon, geoLonMin, geoLonMax, geoStep)
 	latBits := coordToBits(lat, geoLatMin, geoLatMax, geoStep)
 	// Redis calls interleave64(lat_offset, long_offset) - latitude first
-	// Ensure we're using 32-bit values as Redis does
-	inter := interleaveBits(uint64(uint32(latBits)), uint64(uint32(lonBits)))
+	inter := interleaveBits(latBits, lonBits)
 	return float64(inter)
 }
 
@@ -742,7 +741,8 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	offset := (val - min) / scale
 	// Convert to fixed point based on step size - Redis uses (1ULL << step)
 	offset *= float64(uint64(1) << step)
-	return uint64(offset)
+	// Redis casts the result to uint32 in interleave64, so we need to match that
+	return uint64(uint32(offset))
 }
 
 func interleaveBits(x, y uint64) uint64 {
