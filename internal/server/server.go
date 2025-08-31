@@ -98,17 +98,35 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 	return R * c
 }
 
-// Reverse of Redis-style interleaving: even bits -> latitude (y), odd bits -> longitude (x)
-func deinterleaveBits(z uint64) (uint64, uint64) {
-	var x uint64 = 0
-	var y uint64 = 0
-	for i := uint(0); i < geoStep; i++ {
-		// x (lon) from odd bit positions 2*i+1
-		x |= ((z >> (2*i + 1)) & 1) << i
-		// y (lat) from even bit positions 2*i
-		y |= ((z >> (2 * i)) & 1) << i
-	}
-	return x, y
+// Reverse of Redis-style interleaving using the same approach as Redis deinterleave64
+func deinterleaveBits(interleaved uint64) (uint64, uint64) {
+	B := [6]uint64{0x5555555555555555, 0x3333333333333333,
+		0x0F0F0F0F0F0F0F0F, 0x00FF00FF00FF00FF,
+		0x0000FFFF0000FFFF, 0x00000000FFFFFFFF}
+	S := [6]uint{0, 1, 2, 4, 8, 16}
+
+	x := interleaved
+	y := interleaved >> 1
+
+	x = (x | (x >> S[0])) & B[0]
+	y = (y | (y >> S[0])) & B[0]
+
+	x = (x | (x >> S[1])) & B[1]
+	y = (y | (y >> S[1])) & B[1]
+
+	x = (x | (x >> S[2])) & B[2]
+	y = (y | (y >> S[2])) & B[2]
+
+	x = (x | (x >> S[3])) & B[3]
+	y = (y | (y >> S[3])) & B[3]
+
+	x = (x | (x >> S[4])) & B[4]
+	y = (y | (y >> S[4])) & B[4]
+
+	x = (x | (x >> S[5])) & B[5]
+	y = (y | (y >> S[5])) & B[5]
+
+	return x, y // x=latitude, y=longitude
 }
 
 // Convert quantized bits back to coordinate using the same bisection the encoder used
@@ -702,7 +720,8 @@ const (
 func geoScoreFromLonLat(lon, lat float64) float64 {
 	lonBits := coordToBits(lon, geoLonMin, geoLonMax, geoStep)
 	latBits := coordToBits(lat, geoLatMin, geoLatMax, geoStep)
-	inter := interleaveBits(lonBits, latBits)
+	// Redis calls interleave64(lat_offset, long_offset) - latitude first
+	inter := interleaveBits(latBits, lonBits)
 	return float64(inter)
 }
 
@@ -728,18 +747,28 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 }
 
 func interleaveBits(x, y uint64) uint64 {
-	// expand to interleaved form
-	x = (x | (x << 16)) & 0x0000FFFF0000FFFF
-	x = (x | (x << 8)) & 0x00FF00FF00FF00FF
-	x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F
-	x = (x | (x << 2)) & 0x3333333333333333
-	x = (x | (x << 1)) & 0x5555555555555555
-	y = (y | (y << 16)) & 0x0000FFFF0000FFFF
-	y = (y | (y << 8)) & 0x00FF00FF00FF00FF
-	y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F
-	y = (y | (y << 2)) & 0x3333333333333333
-	y = (y | (y << 1)) & 0x5555555555555555
-	return y | (x << 1)
+	// Redis interleave64 implementation - x and y must be less than 2**32
+	B := [5]uint64{0x5555555555555555, 0x3333333333333333,
+		0x0F0F0F0F0F0F0F0F, 0x00FF00FF00FF00FF,
+		0x0000FFFF0000FFFF}
+	S := [5]uint{1, 2, 4, 8, 16}
+
+	x = (x | (x << S[4])) & B[4]
+	y = (y | (y << S[4])) & B[4]
+
+	x = (x | (x << S[3])) & B[3]
+	y = (y | (y << S[3])) & B[3]
+
+	x = (x | (x << S[2])) & B[2]
+	y = (y | (y << S[2])) & B[2]
+
+	x = (x | (x << S[1])) & B[1]
+	y = (y | (y << S[1])) & B[1]
+
+	x = (x | (x << S[0])) & B[0]
+	y = (y | (y << S[0])) & B[0]
+
+	return x | (y << 1)
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
@@ -1678,7 +1707,7 @@ func (s *Server) handleCommand(conn net.Conn, parts []string, state *connState) 
 			}
 			// Decode lon/lat from score (round first to avoid fp precision loss)
 			z := uint64(math.Round(score))
-			lonBits, latBits := deinterleaveBits(z) // x from odd, y from even
+			latBits, lonBits := deinterleaveBits(z) // x=latitude, y=longitude from Redis deinterleave64
 			lonVal := bitsToCoord(lonBits, geoLonMin, geoLonMax, geoStep)
 			latVal := bitsToCoord(latBits, geoLatMin, geoLatMax, geoStep)
 			lon := strconv.FormatFloat(lonVal, 'f', 17, 64)
