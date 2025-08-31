@@ -731,9 +731,9 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	// Redis approach: calculate offset and convert to fixed point exactly as Redis does
 	scale := max - min
 	offset := (val - min) / scale
-	// Convert to fixed point based on step size - match Redis precision
+	// Convert to fixed point based on step size
 	offset *= float64(uint64(1) << step)
-	return uint64(math.Round(offset))
+	return uint64(offset)
 }
 
 func interleaveBits(x, y uint64) uint64 {
