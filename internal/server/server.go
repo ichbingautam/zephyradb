@@ -98,15 +98,15 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 	return R * c
 }
 
-// Reverse of Redis-style interleaving: even bits -> longitude (x), odd bits -> latitude (y)
+// Reverse of Redis-style interleaving: even bits -> latitude (y), odd bits -> longitude (x)
 func deinterleaveBits(z uint64) (uint64, uint64) {
 	var x uint64 = 0
 	var y uint64 = 0
 	for i := uint(0); i < geoStep; i++ {
-		// x (lon) from even bit positions 2*i
-		x |= ((z >> (2 * i)) & 1) << i
-		// y (lat) from odd bit positions 2*i+1
-		y |= ((z >> (2*i + 1)) & 1) << i
+		// x (lon) from odd bit positions 2*i+1
+		x |= ((z >> (2*i + 1)) & 1) << i
+		// y (lat) from even bit positions 2*i
+		y |= ((z >> (2 * i)) & 1) << i
 	}
 	return x, y
 }
@@ -739,7 +739,7 @@ func interleaveBits(x, y uint64) uint64 {
 	y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F
 	y = (y | (y << 2)) & 0x3333333333333333
 	y = (y | (y << 1)) & 0x5555555555555555
-	return x | (y << 1)
+	return y | (x << 1)
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
