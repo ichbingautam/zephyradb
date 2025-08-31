@@ -100,32 +100,32 @@ func haversine(lat1, lon1, lat2, lon2, R float64) float64 {
 
 // Reverse of Redis-style interleaving: even bits -> longitude (x), odd bits -> latitude (y)
 func deinterleaveBits(z uint64) (uint64, uint64) {
-    var x uint64 = 0
-    var y uint64 = 0
-    for i := uint(0); i < geoStep; i++ {
-        // x (lon) from even bit positions 2*i
-        x |= ((z >> (2 * i)) & 1) << i
-        // y (lat) from odd bit positions 2*i+1
-        y |= ((z >> (2*i + 1)) & 1) << i
-    }
-    return x, y
+	var x uint64 = 0
+	var y uint64 = 0
+	for i := uint(0); i < geoStep; i++ {
+		// x (lon) from even bit positions 2*i
+		x |= ((z >> (2 * i)) & 1) << i
+		// y (lat) from odd bit positions 2*i+1
+		y |= ((z >> (2*i + 1)) & 1) << i
+	}
+	return x, y
 }
 
 // Convert quantized bits back to coordinate using the same bisection the encoder used
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-    // Walk from MSB to LSB; for each bit, split interval and keep the half matching the bit
-    for i := int(step) - 1; i >= 0; i-- {
-        mid := (min + max) / 2
-        if ((bits >> uint(i)) & 1) == 1 {
-            // Bit 1 -> upper half
-            min = mid
-        } else {
-            // Bit 0 -> lower half
-            max = mid
-        }
-    }
-    // Return midpoint of final interval
-    return (min + max) / 2
+	// Walk from MSB to LSB; for each bit, split interval and keep the half matching the bit
+	for i := int(step) - 1; i >= 0; i-- {
+		mid := (min + max) / 2
+		if ((bits >> uint(i)) & 1) == 1 {
+			// Bit 1 -> upper half
+			min = mid
+		} else {
+			// Bit 0 -> lower half
+			max = mid
+		}
+	}
+	// Return midpoint of final interval
+	return (min + max) / 2
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
@@ -739,7 +739,7 @@ func interleaveBits(x, y uint64) uint64 {
 	y = (y | (y << 4)) & 0x0F0F0F0F0F0F0F0F
 	y = (y | (y << 2)) & 0x3333333333333333
 	y = (y | (y << 1)) & 0x5555555555555555
-	return (x << 1) | y
+	return x | (y << 1)
 }
 
 // SetReplicaOf configures the server as a replica of the given master host:port
