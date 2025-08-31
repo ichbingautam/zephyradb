@@ -138,11 +138,16 @@ func deinterleaveBits(interleaved uint64) (uint64, uint64) {
 
 // Convert quantized bits back to coordinate using Redis approach
 func bitsToCoord(bits uint64, min, max float64, step uint) float64 {
-	// Redis approach: calculate coordinate directly from bits
+	// Redis approach: calculate min and max range, then take midpoint
 	scale := max - min
 	stepSize := float64(uint64(1) << step)
-	// Calculate the coordinate as Redis does: min + (bits + 0.5) * scale / stepSize
-	return min + (float64(bits)+0.5)*scale/stepSize
+	
+	// Calculate range as Redis does
+	coordMin := min + (float64(bits)*1.0/stepSize)*scale
+	coordMax := min + (float64(bits+1)*1.0/stepSize)*scale
+	
+	// Return midpoint of the range
+	return (coordMin + coordMax) / 2.0
 }
 
 // SetRDBConfig sets the RDB persistence configuration (dir and dbfilename)
@@ -734,9 +739,9 @@ func coordToBits(val, min, max float64, step uint) uint64 {
 	// Redis approach: calculate offset and convert to fixed point exactly as Redis does
 	scale := max - min
 	offset := (val - min) / scale
-	// Convert to fixed point based on step size
+	// Convert to fixed point based on step size - Redis casts to uint32
 	offset *= float64(uint64(1) << step)
-	return uint64(offset)
+	return uint64(uint32(offset))
 }
 
 func interleaveBits(x, y uint64) uint64 {
